@@ -5,10 +5,6 @@
 # Private Documentation (not committed to GitHub)
 # ====================
 
-# Exclude all markdown files EXCEPT README.md
-*.md
-!README.md
-
 # Keep .claude directory private (contains session state and commands)
 .claude/
 
