@@ -8,6 +8,14 @@
 # Keep .claude directory private (contains session state and commands)
 .claude/
 
+# Private planning and technical documentation
+# Only README.md should be public
+prd.md
+release-plan.md
+session-state.md
+technical-requirements.md
+CLAUDE.md
+
 # ====================
 # Xcode
 # ====================
