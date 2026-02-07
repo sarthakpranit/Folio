@@ -2,56 +2,159 @@
 //  Persistence.swift
 //  Folio
 //
-//  Created by Sarthak Pranit on 14/12/2025.
+//  Core Data stack with CloudKit sync support
 //
 
 import CoreData
+import CloudKit
+import Combine
 
-struct PersistenceController {
+class PersistenceController: ObservableObject {
     static let shared = PersistenceController()
 
+    /// Preview instance for SwiftUI previews
     @MainActor
     static let preview: PersistenceController = {
         let result = PersistenceController(inMemory: true)
         let viewContext = result.container.viewContext
-        for _ in 0..<10 {
-            let newItem = Item(context: viewContext)
-            newItem.timestamp = Date()
-        }
+
+        // Create sample data
+        let book = Book(context: viewContext)
+        book.id = UUID()
+        book.title = "The Great Gatsby"
+        book.sortTitle = "great gatsby"
+        book.format = "epub"
+        book.fileURL = URL(fileURLWithPath: "/sample/great-gatsby.epub")
+        book.fileSize = 1024000
+        book.dateAdded = Date()
+        book.dateModified = Date()
+        book.summary = "A novel about the American dream set in the Jazz Age."
+
+        let author = Author(context: viewContext)
+        author.id = UUID()
+        author.name = "F. Scott Fitzgerald"
+        author.sortName = "Fitzgerald, F. Scott"
+        author.books = [book]
+
+        book.authors = [author]
+
+        let tag = Tag(context: viewContext)
+        tag.id = UUID()
+        tag.name = "Classic"
+        tag.color = "#8B4513"
+        tag.books = [book]
+
+        book.tags = [tag]
+
         do {
             try viewContext.save()
         } catch {
-            // Replace this implementation with code to handle the error appropriately.
-            // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
             let nsError = error as NSError
             fatalError("Unresolved error \(nsError), \(nsError.userInfo)")
         }
         return result
     }()
 
-    let container: NSPersistentContainer
+    /// In-memory instance for testing
+    static func inMemory() -> PersistenceController {
+        PersistenceController(inMemory: true)
+    }
+
+    let container: NSPersistentCloudKitContainer
+
+    /// Sync status
+    @Published var isSyncing: Bool = false
+    @Published var lastSyncDate: Date?
+    @Published var syncError: Error?
 
     init(inMemory: Bool = false) {
-        container = NSPersistentContainer(name: "Folio")
-        if inMemory {
-            container.persistentStoreDescriptions.first!.url = URL(fileURLWithPath: "/dev/null")
-        }
-        container.loadPersistentStores(completionHandler: { (storeDescription, error) in
-            if let error = error as NSError? {
-                // Replace this implementation with code to handle the error appropriately.
-                // fatalError() causes the application to generate a crash log and terminate. You should not use this function in a shipping application, although it may be useful during development.
+        container = NSPersistentCloudKitContainer(name: "Folio")
 
-                /*
-                 Typical reasons for an error here include:
-                 * The parent directory does not exist, cannot be created, or disallows writing.
-                 * The persistent store is not accessible, due to permissions or data protection when the device is locked.
-                 * The device is out of space.
-                 * The store could not be migrated to the current model version.
-                 Check the error message to determine what the actual problem was.
-                 */
-                fatalError("Unresolved error \(error), \(error.userInfo)")
+        guard let description = container.persistentStoreDescriptions.first else {
+            fatalError("No persistent store descriptions found")
+        }
+
+        if inMemory {
+            description.url = URL(fileURLWithPath: "/dev/null")
+        } else {
+            // Configure CloudKit sync (disabled for now until entitlements are set up)
+            // Uncomment when CloudKit container is configured:
+            // description.cloudKitContainerOptions = NSPersistentCloudKitContainerOptions(
+            //     containerIdentifier: "iCloud.com.folio.ebooks"
+            // )
+
+            // Enable persistent history tracking (required for CloudKit)
+            description.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
+            description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+        }
+
+        container.loadPersistentStores { storeDescription, error in
+            if let error = error as NSError? {
+                // Log the error but don't crash in production
+                print("Core Data store failed to load: \(error), \(error.userInfo)")
+
+                #if DEBUG
+                fatalError("Unresolved Core Data error \(error), \(error.userInfo)")
+                #endif
             }
-        })
+        }
+
+        // Configure view context
         container.viewContext.automaticallyMergesChangesFromParent = true
+        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+
+        // Observe remote changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(processRemoteStoreChange),
+            name: .NSPersistentStoreRemoteChange,
+            object: container.persistentStoreCoordinator
+        )
+    }
+
+    @objc private func processRemoteStoreChange(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            self?.isSyncing = false
+            self?.lastSyncDate = Date()
+        }
+    }
+
+    /// Save the view context if there are changes
+    func save() throws {
+        let context = container.viewContext
+        if context.hasChanges {
+            try context.save()
+        }
+    }
+
+    /// Perform work on a background context
+    func performBackgroundTask<T>(_ block: @escaping (NSManagedObjectContext) throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            container.performBackgroundTask { context in
+                do {
+                    let result = try block(context)
+                    if context.hasChanges {
+                        try context.save()
+                    }
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Delete all data (for testing/reset)
+    func deleteAllData() throws {
+        let context = container.viewContext
+
+        let entities = ["Book", "Author", "Series", "Tag", "Collection"]
+        for entityName in entities {
+            let fetchRequest = NSFetchRequest<NSFetchRequestResult>(entityName: entityName)
+            let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetchRequest)
+            try container.persistentStoreCoordinator.execute(deleteRequest, with: context)
+        }
+
+        context.reset()
     }
 }

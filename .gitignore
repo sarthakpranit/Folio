@@ -1,25 +1,18 @@
 # Folio - .gitignore
-# Keep planning docs private, only README.md is public
 
 # ====================
-# Private Documentation (not committed to GitHub)
+# Private Documentation
 # ====================
-
-# Keep .claude directory private (contains session state and commands)
 .claude/
 
 # ====================
 # Xcode
 # ====================
-
-## Build generated
 build/
 DerivedData/
 *.ipa
 *.dSYM.zip
 *.dSYM
-
-## Various settings
 *.pbxuser
 !default.pbxuser
 *.mode1v3
@@ -29,19 +22,10 @@ DerivedData/
 *.perspectivev3
 !default.perspectivev3
 xcuserdata/
-
-## Other
 *.moved-aside
 *.xccheckout
 *.xcscmblueprint
-
-## Obj-C/Swift specific
 *.hmap
-*.ipa
-*.dSYM.zip
-*.dSYM
-
-## Playgrounds
 timeline.xctimeline
 playground.xcworkspace
 
@@ -50,11 +34,11 @@ playground.xcworkspace
 .swiftpm/
 Package.resolved
 
-# CocoaPods (if used instead of SPM)
+# CocoaPods
 Pods/
 *.xcworkspace
 
-# Carthage (if used)
+# Carthage
 Carthage/Build/
 
 # fastlane
@@ -63,24 +47,14 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 
-# Code Injection
-iOSInjectionProject/
-
 # ====================
 # macOS
 # ====================
-
 .DS_Store
 .AppleDouble
 .LSOverride
-
-# Icon must end with two \r
 Icon
-
-# Thumbnails
 ._*
-
-# Files that might appear in the root of a volume
 .DocumentRevisions-V100
 .fseventsd
 .Spotlight-V100
@@ -88,8 +62,6 @@ Icon
 .Trashes
 .VolumeIcon.icns
 .com.apple.timemachine.donotpresent
-
-# Directories potentially created on remote AFP share
 .AppleDB
 .AppleDesktop
 Network Trash Folder
@@ -99,30 +71,22 @@ Temporary Items
 # ====================
 # IDEs
 # ====================
-
-# VSCode
 .vscode/
 *.code-workspace
-
-# JetBrains (AppCode)
 .idea/
 *.iml
 *.ipr
 *.iws
 
 # ====================
-# Dependencies (bundled with app)
+# Dependencies
 # ====================
-
-# Calibre binaries will be bundled in Resources/
-# These are large binaries, track with Git LFS if needed
 Resources/calibre/*.dylib
 Resources/calibre/*.so
 
 # ====================
 # Testing & Coverage
 # ====================
-
 *.gcda
 *.gcno
 coverage/
@@ -131,20 +95,14 @@ coverage/
 # ====================
 # Development & Debug
 # ====================
-
-# Local environment files
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
-
-# Debug logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# Temporary files
 *.tmp
 *.temp
 *.swp
@@ -154,27 +112,17 @@ yarn-error.log*
 # ====================
 # App-Specific
 # ====================
-
-# Test data (sample ebooks for development)
 TestBooks/
 SampleLibrary/
-
-# Local configuration (user-specific settings for development)
 Config.local.swift
-
-# Exported data during development
 exports/
 backups/
 
 # ====================
 # Distribution
 # ====================
-
-# Archives
 *.zip
 *.tar.gz
 *.tar.bz2
-
-# Signed builds (create via CI/CD instead)
 dist/
 releases/
