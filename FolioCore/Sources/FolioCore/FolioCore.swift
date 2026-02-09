@@ -25,7 +25,11 @@ public enum LogLevel: Int, Comparable, Sendable {
 public final class FolioLogger: @unchecked Sendable {
     public static let shared = FolioLogger()
 
+    #if DEBUG
+    public var minimumLevel: LogLevel = .debug
+    #else
     public var minimumLevel: LogLevel = .info
+    #endif
     public var isEnabled: Bool = true
 
     private init() {}

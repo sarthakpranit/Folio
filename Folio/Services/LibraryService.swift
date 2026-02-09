@@ -9,6 +9,7 @@ import Foundation
 import CoreData
 import Combine
 import UniformTypeIdentifiers
+import FolioCore
 
 /// Main service for managing the ebook library
 @MainActor
@@ -104,6 +105,14 @@ class LibraryService: ObservableObject {
     /// - Returns: The created Book entity
     @discardableResult
     func addBook(from fileURL: URL, shouldCopy: Bool = false) throws -> Book {
+        // Start accessing security-scoped resource for files from Finder
+        let accessing = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessing {
+                fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
         guard isValidEbookFile(fileURL) else {
             throw LibraryError.invalidFormat(fileURL.pathExtension)
         }
@@ -120,13 +129,32 @@ class LibraryService: ObservableObject {
         book.dateAdded = Date()
         book.dateModified = Date()
 
+        // Create and store a security-scoped bookmark for persistent file access
+        do {
+            let bookmarkData = try fileURL.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            book.bookmarkData = bookmarkData
+            print("Created security-scoped bookmark for: \(fileURL.lastPathComponent)")
+        } catch {
+            print("Failed to create bookmark for \(fileURL.lastPathComponent): \(error)")
+            // Continue without bookmark - file may still work if accessed in same session
+        }
+
         // Extract title from filename as default
         let title = extractTitleFromFilename(fileURL.lastPathComponent)
         book.title = title
         book.sortTitle = generateSortTitle(title)
 
         try viewContext.save()
+
+        // Refresh the context to ensure @FetchRequest sees the changes
+        viewContext.refreshAllObjects()
+
         loadBooks()
+        objectWillChange.send()
 
         print("Added book: \(book.title ?? "Unknown")")
         return book
@@ -168,27 +196,52 @@ class LibraryService: ObservableObject {
         return ImportResult(imported: imported, failed: failed, errors: errors)
     }
 
-    /// Import all ebooks from a directory
+    /// Import all ebooks from a directory (recursively searches all subdirectories)
     private func importBooksFromDirectory(_ directoryURL: URL) async throws -> Int {
         let fileManager = FileManager.default
-        let contents = try fileManager.contentsOfDirectory(
+
+        // Use enumerator for recursive directory traversal
+        guard let enumerator = fileManager.enumerator(
             at: directoryURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            print("Failed to create directory enumerator for: \(directoryURL.path)")
+            return 0
+        }
 
-        let ebookFiles = contents.filter { isValidEbookFile($0) }
         var importedCount = 0
+        var totalFound = 0
 
-        for fileURL in ebookFiles {
+        // Enumerate all files recursively
+        for case let fileURL as URL in enumerator {
+            // Check if it's a regular file (not a directory)
+            guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                  resourceValues.isRegularFile == true else {
+                continue
+            }
+
+            // Check if it's a valid ebook file
+            guard isValidEbookFile(fileURL) else {
+                continue
+            }
+
+            totalFound += 1
+
             do {
                 try addBook(from: fileURL)
                 importedCount += 1
+
+                // Log progress for large imports
+                if importedCount % 10 == 0 {
+                    print("Imported \(importedCount) books so far...")
+                }
             } catch {
                 print("Failed to import \(fileURL.lastPathComponent): \(error.localizedDescription)")
             }
         }
 
+        print("Recursive import complete: \(importedCount)/\(totalFound) books imported from \(directoryURL.lastPathComponent)")
         return importedCount
     }
 
@@ -532,5 +585,39 @@ enum LibraryError: LocalizedError {
         case .importFailed(let reason):
             return "Import failed: \(reason)"
         }
+    }
+}
+
+// MARK: - HTTPTransferBookProvider Conformance
+
+extension LibraryService: HTTPTransferBookProvider {
+    /// Get all books as DTOs for the HTTP transfer server
+    func getAllBooks() -> [BookDTO] {
+        books.map { book in
+            let authorNames = (book.authors as? Set<Author>)?.compactMap { $0.name } ?? []
+            return BookDTO(
+                id: book.id?.uuidString ?? UUID().uuidString,
+                title: book.title ?? "Unknown",
+                authors: authorNames,
+                format: book.format ?? "unknown",
+                fileSize: book.fileSize,
+                coverURL: nil,
+                dateAdded: book.dateAdded ?? Date()
+            )
+        }
+    }
+
+    /// Get the file URL for a book by its ID
+    func getBookFileURL(id: String) -> URL? {
+        guard let uuid = UUID(uuidString: id) else { return nil }
+        return books.first { $0.id == uuid }?.fileURL
+    }
+
+    /// Get the format for a book by its ID
+    func getBookFormat(id: String) -> EbookFormat? {
+        guard let uuid = UUID(uuidString: id),
+              let book = books.first(where: { $0.id == uuid }),
+              let formatString = book.format else { return nil }
+        return EbookFormat(fileExtension: formatString)
     }
 }

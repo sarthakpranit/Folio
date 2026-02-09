@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Sandbox is enabled -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Allow read/write access to user-selected files (via open panels, drag-drop) -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Allow read-only access to user-selected files -->
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+
+    <!-- Allow network connections (for HTTP server and metadata fetching) -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Allow incoming network connections (for HTTP server) -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- Allow access to Downloads folder (common ebook location) -->
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+
+    <!-- Allow sending Apple Events to other apps (for opening in Apple Books) -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+
+    <!-- Allow storing security-scoped bookmarks for persistent file access -->
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+</dict>
+</plist>

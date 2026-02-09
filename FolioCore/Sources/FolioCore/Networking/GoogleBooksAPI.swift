@@ -13,8 +13,14 @@ public final class GoogleBooksAPI: MetadataProvider, @unchecked Sendable {
     private static let baseURL = "https://www.googleapis.com/books/v1/volumes"
     private static let maxResults = 10
 
-    /// Rate limiting: max requests per second
-    private static let rateLimitPerSecond: Double = 1.0
+    /// Rate limiting: minimum seconds between requests (more conservative without API key)
+    private static let minRequestInterval: Double = 2.0
+
+    /// Maximum retry attempts for rate-limited requests
+    private static let maxRetryAttempts = 3
+
+    /// Base delay for exponential backoff (seconds)
+    private static let baseRetryDelay: Double = 5.0
 
     // MARK: - Properties
 
@@ -24,6 +30,9 @@ public final class GoogleBooksAPI: MetadataProvider, @unchecked Sendable {
     /// Last request timestamp for rate limiting
     private var lastRequestTime: Date = .distantPast
     private let rateLimitQueue = DispatchQueue(label: "com.folio.googlebooksapi.ratelimit")
+
+    /// Track consecutive rate limit hits for adaptive throttling
+    private var consecutiveRateLimits: Int = 0
 
     public var providerName: String { "google_books" }
 
@@ -44,8 +53,6 @@ public final class GoogleBooksAPI: MetadataProvider, @unchecked Sendable {
     // MARK: - MetadataProvider Protocol
 
     public func fetchMetadata(isbn: String) async throws -> BookMetadata? {
-        await enforceRateLimit()
-
         let cleanISBN = isbn.replacingOccurrences(of: "-", with: "")
         let query = "isbn:\(cleanISBN)"
 
@@ -53,21 +60,23 @@ public final class GoogleBooksAPI: MetadataProvider, @unchecked Sendable {
             throw MetadataError.invalidRequest("Failed to build search URL")
         }
 
-        let (data, response) = try await session.data(from: url)
-        try validateResponse(response)
+        return try await executeWithRetry {
+            await self.enforceRateLimit()
 
-        let json = JSON(data)
+            let (data, response) = try await self.session.data(from: url)
+            try self.validateResponse(response)
 
-        guard let firstItem = json["items"].array?.first else {
-            return nil
+            let json = JSON(data)
+
+            guard let firstItem = json["items"].array?.first else {
+                return nil
+            }
+
+            return self.parseVolumeInfo(firstItem["volumeInfo"], confidence: 0.95)
         }
-
-        return parseVolumeInfo(firstItem["volumeInfo"], confidence: 0.95)
     }
 
     public func fetchMetadata(title: String, author: String?) async throws -> [BookMetadata] {
-        await enforceRateLimit()
-
         var queryParts: [String] = []
 
         // Clean and format title for search
@@ -82,35 +91,58 @@ public final class GoogleBooksAPI: MetadataProvider, @unchecked Sendable {
         }
 
         guard !queryParts.isEmpty else {
+            logger.warning("Google Books: Empty query - no title or author provided")
             return []
         }
 
         let query = queryParts.joined(separator: "+")
+        logger.info("Google Books: Searching for '\(query)'")
 
         guard let url = buildSearchURL(query: query) else {
+            logger.error("Google Books: Failed to build search URL for query: \(query)")
             throw MetadataError.invalidRequest("Failed to build search URL")
         }
 
-        let (data, response) = try await session.data(from: url)
-        try validateResponse(response)
+        logger.debug("Google Books: Request URL: \(url.absoluteString)")
 
-        let json = JSON(data)
+        // Use retry logic for rate limiting
+        return try await executeWithRetry {
+            await self.enforceRateLimit()
 
-        guard let items = json["items"].array else {
-            return []
-        }
+            let (data, response) = try await self.session.data(from: url)
+            try self.validateResponse(response)
 
-        return items.compactMap { item -> BookMetadata? in
-            let volumeInfo = item["volumeInfo"]
+            let json = JSON(data)
 
-            // Calculate confidence based on how well the result matches the query
-            let confidence = calculateConfidence(
-                volumeInfo: volumeInfo,
-                searchTitle: cleanTitle,
-                searchAuthor: author
-            )
+            // Log raw response for debugging
+            let totalItems = json["totalItems"].intValue
+            logger.info("Google Books: Found \(totalItems) total items")
 
-            return parseVolumeInfo(volumeInfo, confidence: confidence)
+            guard let items = json["items"].array else {
+                logger.info("Google Books: No items in response (totalItems: \(totalItems))")
+                if let errorMessage = json["error"]["message"].string {
+                    logger.error("Google Books API error: \(errorMessage)")
+                }
+                return []
+            }
+
+            logger.debug("Google Books: Processing \(items.count) items")
+
+            let results = items.compactMap { item -> BookMetadata? in
+                let volumeInfo = item["volumeInfo"]
+
+                // Calculate confidence based on how well the result matches the query
+                let confidence = self.calculateConfidence(
+                    volumeInfo: volumeInfo,
+                    searchTitle: cleanTitle,
+                    searchAuthor: author
+                )
+
+                return self.parseVolumeInfo(volumeInfo, confidence: confidence)
+            }
+
+            logger.info("Google Books: Returning \(results.count) metadata results")
+            return results
         }
     }
 
@@ -295,11 +327,13 @@ public final class GoogleBooksAPI: MetadataProvider, @unchecked Sendable {
         await withCheckedContinuation { continuation in
             rateLimitQueue.async {
                 let now = Date()
-                let minInterval = 1.0 / Self.rateLimitPerSecond
+                // Adaptive interval: increase delay if we've been rate limited recently
+                let adaptiveInterval = Self.minRequestInterval * Double(1 + self.consecutiveRateLimits)
                 let elapsed = now.timeIntervalSince(self.lastRequestTime)
 
-                if elapsed < minInterval {
-                    let delay = minInterval - elapsed
+                if elapsed < adaptiveInterval {
+                    let delay = adaptiveInterval - elapsed
+                    logger.debug("Google Books: Rate limit delay \(String(format: "%.1f", delay))s")
                     Thread.sleep(forTimeInterval: delay)
                 }
 
@@ -307,5 +341,39 @@ public final class GoogleBooksAPI: MetadataProvider, @unchecked Sendable {
                 continuation.resume()
             }
         }
+    }
+
+    /// Execute request with automatic retry on rate limiting
+    private func executeWithRetry<T>(_ operation: () async throws -> T) async throws -> T {
+        var lastError: Error?
+
+        for attempt in 0..<Self.maxRetryAttempts {
+            do {
+                let result = try await operation()
+                // Success - reset rate limit counter
+                rateLimitQueue.sync { consecutiveRateLimits = 0 }
+                return result
+            } catch let error as MetadataError {
+                if case .rateLimited = error {
+                    // Increment rate limit counter for adaptive throttling
+                    rateLimitQueue.sync { consecutiveRateLimits += 1 }
+
+                    let delay = Self.baseRetryDelay * pow(2.0, Double(attempt))
+                    logger.warning("Google Books: Rate limited, retry \(attempt + 1)/\(Self.maxRetryAttempts) in \(Int(delay))s")
+
+                    if attempt < Self.maxRetryAttempts - 1 {
+                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        continue
+                    }
+                }
+                lastError = error
+                throw error
+            } catch {
+                lastError = error
+                throw error
+            }
+        }
+
+        throw lastError ?? MetadataError.networkError("Max retries exceeded")
     }
 }

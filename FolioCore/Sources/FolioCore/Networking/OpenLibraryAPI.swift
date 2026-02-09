@@ -35,6 +35,10 @@ public final class OpenLibraryAPI: MetadataProvider, @unchecked Sendable {
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
         config.waitsForConnectivity = true
+        // Add User-Agent header as required by Open Library API guidelines
+        config.httpAdditionalHeaders = [
+            "User-Agent": "Folio/1.0 (macOS ebook manager; https://github.com/folio-app)"
+        ]
         self.session = URLSession(configuration: config)
     }
 
@@ -116,51 +120,67 @@ public final class OpenLibraryAPI: MetadataProvider, @unchecked Sendable {
     public func fetchMetadata(title: String, author: String?) async throws -> [BookMetadata] {
         await enforceRateLimit()
 
-        var queryParts: [String] = []
-
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !cleanTitle.isEmpty {
-            queryParts.append("title=\(cleanTitle)")
-        }
+        let cleanAuthor = author?.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if let author = author?.trimmingCharacters(in: .whitespacesAndNewlines), !author.isEmpty {
-            queryParts.append("author=\(author)")
-        }
-
-        guard !queryParts.isEmpty else {
+        guard !cleanTitle.isEmpty else {
+            logger.warning("Open Library: Empty query - no title provided")
             return []
+        }
+
+        // Build the search query using 'q' parameter (more flexible than separate title/author params)
+        // Format: "title author" for general search
+        var searchQuery = cleanTitle
+        if let author = cleanAuthor, !author.isEmpty {
+            searchQuery += " \(author)"
         }
 
         guard var components = URLComponents(string: Self.searchBaseURL) else {
             throw MetadataError.invalidRequest("Failed to build search URL")
         }
 
-        var queryItems: [URLQueryItem] = []
-        if !cleanTitle.isEmpty {
-            queryItems.append(URLQueryItem(name: "title", value: cleanTitle))
-        }
-        if let author = author?.trimmingCharacters(in: .whitespacesAndNewlines), !author.isEmpty {
-            queryItems.append(URLQueryItem(name: "author", value: author))
-        }
-        queryItems.append(URLQueryItem(name: "limit", value: String(Self.maxResults)))
-
-        components.queryItems = queryItems
+        // Use 'q' for general search query and specify fields we need
+        components.queryItems = [
+            URLQueryItem(name: "q", value: searchQuery),
+            URLQueryItem(name: "limit", value: String(Self.maxResults)),
+            URLQueryItem(name: "fields", value: "key,title,author_name,author_key,first_publish_year,publisher,isbn,cover_i,number_of_pages_median,language,subject")
+        ]
 
         guard let url = components.url else {
             throw MetadataError.invalidRequest("Failed to build search URL")
         }
 
-        let (data, response) = try await session.data(from: url)
-        try validateResponse(response)
+        logger.info("Open Library: Searching for q='\(searchQuery)'")
+        logger.debug("Open Library: Request URL: \(url.absoluteString)")
 
-        let json = JSON(data)
+        do {
+            let (data, response) = try await session.data(from: url)
+            try validateResponse(response)
 
-        guard let docs = json["docs"].array else {
-            return []
-        }
+            let json = JSON(data)
 
-        return docs.compactMap { doc -> BookMetadata? in
-            parseSearchResult(doc, searchTitle: cleanTitle, searchAuthor: author)
+            // Log the raw response for debugging
+            logger.debug("Open Library: Raw response keys: \(json.dictionaryValue.keys.joined(separator: ", "))")
+
+            let numFound = json["numFound"].intValue
+            logger.info("Open Library: Found \(numFound) total results")
+
+            guard let docs = json["docs"].array, !docs.isEmpty else {
+                logger.info("Open Library: No docs in response (numFound: \(numFound))")
+                return []
+            }
+
+            logger.debug("Open Library: Processing \(docs.count) docs")
+
+            let results = docs.compactMap { doc -> BookMetadata? in
+                parseSearchResult(doc, searchTitle: cleanTitle, searchAuthor: cleanAuthor)
+            }
+
+            logger.info("Open Library: Returning \(results.count) metadata results")
+            return results
+        } catch {
+            logger.error("Open Library: Request failed - \(error.localizedDescription)")
+            throw error
         }
     }
 
@@ -226,12 +246,15 @@ public final class OpenLibraryAPI: MetadataProvider, @unchecked Sendable {
     /// Parse a search result document to BookMetadata
     private func parseSearchResult(_ doc: JSON, searchTitle: String, searchAuthor: String?) -> BookMetadata? {
         guard let title = doc["title"].string, !title.isEmpty else {
+            logger.debug("Open Library: Skipping doc with no title")
             return nil
         }
 
+        // Get authors from author_name array
         let authors = doc["author_name"].arrayValue.compactMap { $0.string }
+        logger.debug("Open Library: Parsing '\(title)' by \(authors.joined(separator: ", "))")
 
-        // Get ISBN
+        // Get ISBN - can be array of strings
         let isbns = doc["isbn"].arrayValue.compactMap { $0.string }
         var isbn: String?
         var isbn13: String?
@@ -254,15 +277,17 @@ public final class OpenLibraryAPI: MetadataProvider, @unchecked Sendable {
             publishedDate = formatter.date(from: String(year))
         }
 
-        // Get cover image URL from cover_i
+        // Get cover image URL from cover_i (this is the cover ID)
         var coverImageURL: URL?
         if let coverId = doc["cover_i"].int {
             coverImageURL = buildCoverURL(coverId: coverId, size: .large)
-        } else if let isbn = isbn ?? isbn13 {
-            coverImageURL = buildCoverURL(isbn: isbn, size: .large)
+            logger.debug("Open Library: Cover ID \(coverId) for '\(title)'")
+        } else if let isbnForCover = isbn13 ?? isbn {
+            // Fallback to ISBN-based cover URL
+            coverImageURL = buildCoverURL(isbn: isbnForCover, size: .large)
         }
 
-        // Get publisher
+        // Get publisher - can be array
         let publisher = doc["publisher"].arrayValue.first?.string
 
         // Get subjects as tags

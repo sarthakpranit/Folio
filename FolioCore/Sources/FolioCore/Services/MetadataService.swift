@@ -122,7 +122,8 @@ public struct MetadataSearchOptions: Sendable {
 
 /// Service that aggregates multiple metadata providers with fallback strategy
 ///
-/// The service tries providers in order of priority (Google Books first, then Open Library).
+/// The service tries providers in order of priority (Open Library first, then Google Books).
+/// Open Library is preferred as it has no API key requirement and more lenient rate limits.
 /// For ISBN lookups, it can merge results from multiple providers for better coverage.
 /// For title searches, it returns results from the first provider that succeeds.
 public final class MetadataService: @unchecked Sendable {
@@ -137,11 +138,11 @@ public final class MetadataService: @unchecked Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize with default providers (Google Books, then Open Library)
+    /// Initialize with default providers (Open Library only - no API key, lenient rate limits)
     public init() {
         self.providers = [
-            GoogleBooksAPI(),
-            OpenLibraryAPI()
+            OpenLibraryAPI()     // Primary and only: No API key required, 1 req/sec rate limit
+            // Google Books removed due to aggressive rate limiting without API key
         ]
     }
 
@@ -151,10 +152,11 @@ public final class MetadataService: @unchecked Sendable {
         self.providers = providers
     }
 
-    /// Initialize with Google Books API key
-    /// - Parameter googleBooksAPIKey: API key for Google Books (increases rate limits)
+    /// Initialize with Google Books API key (prioritizes Google Books when API key is provided)
+    /// - Parameter googleBooksAPIKey: API key for Google Books (increases rate limits significantly)
     public convenience init(googleBooksAPIKey: String) {
         self.init()
+        // With an API key, Google Books has much higher rate limits, so prioritize it
         self.providers = [
             GoogleBooksAPI(apiKey: googleBooksAPIKey),
             OpenLibraryAPI()

@@ -214,11 +214,11 @@
 			);
 			mainGroup = 45A26E2C2EEF58E2003DEF3A;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
-			productRefGroup = 45A26E362EEF58E2003DEF3A /* Products */;
 			packageReferences = (
 				45E985072EEF5DC600211C6F /* XCLocalSwiftPackageReference "FolioCore" */,
 			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 45A26E362EEF58E2003DEF3A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -417,6 +417,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Folio/Folio.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -461,6 +462,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Folio/Folio.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
