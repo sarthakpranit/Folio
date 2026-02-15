@@ -145,10 +145,17 @@ class LibraryService: ObservableObject {
             // Continue without bookmark - file may still work if accessed in same session
         }
 
-        // Extract title from filename as default
-        let title = extractTitleFromFilename(fileURL.lastPathComponent)
-        book.title = title
-        book.sortTitle = generateSortTitle(title)
+        // Extract title and author from filename
+        let parsed = parseFilename(fileURL.lastPathComponent)
+        book.title = parsed.title
+        book.sortTitle = generateSortTitle(parsed.title)
+
+        // Set author if extracted from filename
+        if let authorName = parsed.author, !authorName.isEmpty {
+            let author = findOrCreateAuthor(name: authorName)
+            book.addToAuthors(author)
+            print("Extracted author from filename: \(authorName)")
+        }
 
         try viewContext.save()
 
@@ -273,6 +280,71 @@ class LibraryService: ObservableObject {
 
         try viewContext.save()
         loadBooks()
+    }
+
+    // MARK: - Title Cleanup
+
+    /// Result of cleaning book titles
+    struct CleanupResult {
+        let booksProcessed: Int
+        let titlesFixed: Int
+        let authorsExtracted: Int
+    }
+
+    /// Clean up book titles by extracting embedded author names
+    /// This fixes books where the title contains "Title - Author" format
+    func cleanupBookTitles(books booksToClean: [Book]? = nil) -> CleanupResult {
+        let targetBooks = booksToClean ?? self.books
+        var titlesFixed = 0
+        var authorsExtracted = 0
+
+        for book in targetBooks {
+            guard let currentTitle = book.title else { continue }
+
+            // Check if this book might have an embedded author in the title
+            let parsed = parseFilename(currentTitle + ".epub") // Add fake extension for parsing
+
+            // Only update if we found an author AND the title changed significantly
+            if let extractedAuthor = parsed.author,
+               !extractedAuthor.isEmpty,
+               parsed.title != currentTitle {
+
+                // Check if book already has this author
+                let existingAuthors = (book.authors as? Set<Author>) ?? []
+                let hasAuthor = existingAuthors.contains { author in
+                    author.name?.lowercased() == extractedAuthor.lowercased()
+                }
+
+                // Update title
+                let oldTitle = book.title
+                book.title = parsed.title
+                book.sortTitle = generateSortTitle(parsed.title)
+                titlesFixed += 1
+                print("Fixed title: '\(oldTitle ?? "")' -> '\(parsed.title)'")
+
+                // Add author if not already present
+                if !hasAuthor {
+                    let author = findOrCreateAuthor(name: extractedAuthor)
+                    book.addToAuthors(author)
+                    authorsExtracted += 1
+                    print("Extracted author: '\(extractedAuthor)'")
+                }
+            }
+        }
+
+        // Save changes
+        if titlesFixed > 0 {
+            try? viewContext.save()
+            loadBooks()
+            loadAuthors()
+            objectWillChange.send()
+        }
+
+        return CleanupResult(
+            booksProcessed: targetBooks.count,
+            titlesFixed: titlesFixed,
+            authorsExtracted: authorsExtracted
+        )
     }
 
     // MARK: - Search
@@ -502,21 +574,120 @@ class LibraryService: ObservableObject {
         return size
     }
 
-    private func extractTitleFromFilename(_ filename: String) -> String {
-        var title = filename
+    /// Parsed result from filename containing title and optional author
+    struct ParsedFilename {
+        let title: String
+        let author: String?
+    }
+
+    /// Extract title and author from a filename
+    /// Supports patterns like:
+    /// - "Title - Author.epub"
+    /// - "Author - Title.epub" (less common, detected by checking if first part looks like a name)
+    /// - "Title (Author).epub"
+    /// - "Title by Author.epub"
+    private func parseFilename(_ filename: String) -> ParsedFilename {
+        var name = filename
 
         // Remove extension
-        if let dotIndex = title.lastIndex(of: ".") {
-            title = String(title[..<dotIndex])
+        if let dotIndex = name.lastIndex(of: ".") {
+            name = String(name[..<dotIndex])
         }
 
-        // Clean up common patterns
-        title = title
-            .replacingOccurrences(of: "_", with: " ")
+        // Replace underscores with spaces
+        name = name.replacingOccurrences(of: "_", with: " ")
+
+        // Try different patterns
+
+        // Pattern 1: "Title (Author)" or "Title [Author]"
+        if let parenMatch = name.range(of: #"\s*[\(\[]([^\)\]]+)[\)\]]\s*$"#, options: .regularExpression) {
+            let authorPart = String(name[parenMatch])
+                .trimmingCharacters(in: CharacterSet(charactersIn: "()[] "))
+            let titlePart = String(name[..<parenMatch.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if !authorPart.isEmpty && !titlePart.isEmpty {
+                return ParsedFilename(title: titlePart, author: authorPart)
+            }
+        }
+
+        // Pattern 2: "Title by Author"
+        if let byRange = name.range(of: " by ", options: .caseInsensitive) {
+            let titlePart = String(name[..<byRange.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let authorPart = String(name[byRange.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if !authorPart.isEmpty && !titlePart.isEmpty && looksLikeAuthorName(authorPart) {
+                return ParsedFilename(title: titlePart, author: authorPart)
+            }
+        }
+
+        // Pattern 3: "Title - Author" (most common)
+        // Split on " - " and determine which part is title vs author
+        let dashSeparators = [" - ", " – ", " — "]  // Regular dash, en-dash, em-dash
+        for separator in dashSeparators {
+            if let dashRange = name.range(of: separator) {
+                let firstPart = String(name[..<dashRange.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let secondPart = String(name[dashRange.upperBound...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                // The author part usually looks like a name (capitalized words, no special chars)
+                // Title is usually longer and may have more varied characters
+                if !firstPart.isEmpty && !secondPart.isEmpty {
+                    if looksLikeAuthorName(secondPart) && !looksLikeAuthorName(firstPart) {
+                        // "Title - Author" format
+                        return ParsedFilename(title: firstPart, author: secondPart)
+                    } else if looksLikeAuthorName(firstPart) && !looksLikeAuthorName(secondPart) {
+                        // "Author - Title" format
+                        return ParsedFilename(title: secondPart, author: firstPart)
+                    } else if looksLikeAuthorName(secondPart) {
+                        // Default to "Title - Author" if both could be names
+                        return ParsedFilename(title: firstPart, author: secondPart)
+                    }
+                }
+            }
+        }
+
+        // No pattern matched - just clean up and return as title
+        let cleanedTitle = name
             .replacingOccurrences(of: "-", with: " ")
+            .components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        return title
+        return ParsedFilename(title: cleanedTitle, author: nil)
+    }
+
+    /// Check if a string looks like an author name (e.g., "J.R.R. Tolkien", "George R.R. Martin")
+    private func looksLikeAuthorName(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Author names are typically 2-5 words
+        let words = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        guard words.count >= 1 && words.count <= 6 else { return false }
+
+        // Check if words look like name parts (capitalized, possibly with periods for initials)
+        let namePattern = #"^[A-Z][a-zA-Z]*\.?$"#
+        let regex = try? NSRegularExpression(pattern: namePattern)
+
+        var nameWordCount = 0
+        for word in words {
+            let range = NSRange(word.startIndex..., in: word)
+            if regex?.firstMatch(in: word, range: range) != nil {
+                nameWordCount += 1
+            }
+        }
+
+        // Most words should look like names
+        return Double(nameWordCount) / Double(words.count) >= 0.5
+    }
+
+    /// Legacy function for backward compatibility - extracts only title
+    private func extractTitleFromFilename(_ filename: String) -> String {
+        return parseFilename(filename).title
     }
 
     private func generateSortTitle(_ title: String) -> String {

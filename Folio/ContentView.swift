@@ -507,6 +507,12 @@ struct ContentView: View {
                     Label("Fetch Metadata", systemImage: "arrow.clockwise")
                 }
 
+                Button {
+                    cleanupSelectedBookTitles()
+                } label: {
+                    Label("Clean Up Titles", systemImage: "text.badge.checkmark")
+                }
+
                 Menu("Convert to...") {
                     Button("EPUB") { Task { await batchConvert(to: "epub") } }
                     Button("MOBI") { Task { await batchConvert(to: "mobi") } }
@@ -527,6 +533,27 @@ struct ContentView: View {
         } else {
             EmptyView()
         }
+    }
+
+    /// Clean up titles of selected books by extracting embedded author names
+    private func cleanupSelectedBookTitles() {
+        let booksToClean = selectedBookObjects
+        let result = libraryService.cleanupBookTitles(books: booksToClean)
+
+        if result.titlesFixed > 0 {
+            ToastNotificationManager.shared.show(
+                title: "Titles Cleaned",
+                message: "Fixed \(result.titlesFixed) title(s), extracted \(result.authorsExtracted) author(s)"
+            )
+        } else {
+            ToastNotificationManager.shared.show(
+                title: "No Changes",
+                message: "No embedded author names found in selected books"
+            )
+        }
+
+        selectedBooks.removeAll()
+        isMultiSelectMode = false
     }
 
     private var sortMenu: some View {
@@ -556,8 +583,33 @@ struct ContentView: View {
                 Label(sortAscending ? "Ascending" : "Descending",
                       systemImage: sortAscending ? "arrow.up" : "arrow.down")
             }
+
+            Divider()
+
+            Button {
+                cleanupAllBookTitles()
+            } label: {
+                Label("Clean All Titles", systemImage: "text.badge.checkmark")
+            }
         } label: {
             Label("Sort", systemImage: "arrow.up.arrow.down")
+        }
+    }
+
+    /// Clean up titles of ALL books in the library
+    private func cleanupAllBookTitles() {
+        let result = libraryService.cleanupBookTitles()
+
+        if result.titlesFixed > 0 {
+            ToastNotificationManager.shared.show(
+                title: "Titles Cleaned",
+                message: "Fixed \(result.titlesFixed) of \(result.booksProcessed) book(s), extracted \(result.authorsExtracted) author(s)"
+            )
+        } else {
+            ToastNotificationManager.shared.show(
+                title: "No Changes",
+                message: "No embedded author names found in \(result.booksProcessed) books"
+            )
         }
     }
 
