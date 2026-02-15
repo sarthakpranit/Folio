@@ -4,8 +4,9 @@
 
 Manage your ebooks with a gorgeous interface and transfer wirelessly to your devices. No cables, no complexity.
 
-[![Status](https://img.shields.io/badge/status-in%20development-yellow.svg)]()
+[![Status](https://img.shields.io/badge/status-Phase%201%20Complete-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey.svg)]()
 
 ---
 
@@ -15,12 +16,58 @@ Calibre is powerful but overwhelming. You just want to organize your ebooks and 
 
 ## The Solution
 
-**Folio:** Beautiful native macOS/iOS app that does the essentials perfectly.
+**Folio:** Beautiful native macOS app that does the essentials perfectly.
 
-- 🎨 Beautiful interface, lightning fast
-- 📡 Wireless transfer to any device (Kindle, Kobo, tablet)
-- 🧠 Automatic covers and metadata
+- 🎨 Beautiful grid-based library interface
+- 📡 WiFi transfer to any device via browser
+- 📧 Send to Kindle via email with format conversion
+- 🧠 Automatic covers and metadata from Google Books
+- 📚 Smart grouping of same book in multiple formats
 - 🔒 Private, open source, completely free
+
+---
+
+## Features
+
+### Implemented (Phase 1)
+
+| Feature | Status |
+|---------|--------|
+| **Book Management** | ✅ |
+| Import EPUB, MOBI, PDF, AZW3, CBZ/CBR | ✅ |
+| Drag & drop import | ✅ |
+| Grid view with cover images | ✅ |
+| Sort by title, author, date added, file size | ✅ |
+| Multi-select with Cmd+A support | ✅ |
+| Same book format grouping (EPUB + MOBI = 1 item) | ✅ |
+| **Metadata** | ✅ |
+| Auto-fetch from Google Books API | ✅ |
+| Cover images, authors, series, tags | ✅ |
+| Detailed book info view | ✅ |
+| **Organization** | ✅ |
+| Browse by Author, Series, Tags, Format | ✅ |
+| Search across library | ✅ |
+| Recently Added / Recently Opened views | ✅ |
+| **Wireless Transfer** | ✅ |
+| Built-in HTTP server | ✅ |
+| Mobile-friendly web interface | ✅ |
+| Download books to any device via browser | ✅ |
+| **Kindle Integration** | ✅ |
+| Send to Kindle via email | ✅ |
+| Multiple Kindle device support | ✅ |
+| SMTP email configuration | ✅ |
+| Auto-select best format (MOBI > AZW3 > EPUB) | ✅ |
+| **Format Conversion** | ✅ |
+| Convert between EPUB, MOBI, PDF, AZW3 | ✅ |
+| Powered by Calibre ebook-convert | ✅ |
+
+### Planned (Phase 2+)
+
+- iOS app with sync
+- USB transfer support
+- Bonjour device discovery
+- Collections and smart folders
+- Reading progress sync
 
 ---
 
@@ -35,16 +82,28 @@ Download EPUBs → Folio organizes with covers → Transfer wirelessly via brows
 ### Format Conversion
 Have an EPUB, need MOBI? Folio converts automatically when sending to Kindle.
 
-### Personal Documents
-PDFs, personal EPUBs, research papers—organize everything in one beautiful library.
+### Multiple Formats, One View
+Have the same book in EPUB and MOBI? Folio groups them as one item, showing all format badges.
 
 ---
 
-## Status
+## Requirements
 
-**In active development** - Phase 1 (WiFi-First MVP) underway, 3-4 months to release.
+- macOS 13.0 or later
+- [Calibre](https://calibre-ebook.com/) (for format conversion)
+- For Send to Kindle: Gmail or SMTP email account
 
-Watch this repo for updates.
+---
+
+## Building from Source
+
+```bash
+git clone https://github.com/sarthakpranit/Folio.git
+cd Folio
+open Folio.xcodeproj
+```
+
+Build and run with Xcode 15+.
 
 ---
 
@@ -52,7 +111,6 @@ Watch this repo for updates.
 
 - Works with **DRM-free ebooks only** (library books, public domain, personal files)
 - Uses Calibre's conversion engine (proven quality)
-- macOS 13+ and iOS 16+
 - GPL v3 licensed
 
 ---
