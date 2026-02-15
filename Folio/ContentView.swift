@@ -249,6 +249,20 @@ enum SortOption: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Library View Mode
+
+enum LibraryViewMode: String, CaseIterable {
+    case grid = "Grid"
+    case table = "Table"
+
+    var icon: String {
+        switch self {
+        case .grid: return "square.grid.2x2"
+        case .table: return "list.bullet"
+        }
+    }
+}
+
 // MARK: - Sidebar Selection
 
 enum SidebarItem: Hashable {
@@ -295,7 +309,8 @@ struct ContentView: View {
     @State private var importResult: ImportResult?
     @State private var refreshID = UUID()
 
-    // Sorting
+    // View mode and Sorting
+    @State private var viewMode: LibraryViewMode = .grid
     @State private var currentSortOption: SortOption = .dateAdded
     @State private var sortAscending = false
 
@@ -444,6 +459,21 @@ struct ContentView: View {
         ToolbarItem(placement: .automatic) {
             kindleMenu
         }
+
+        ToolbarItem(placement: .automatic) {
+            viewModeToggle
+        }
+    }
+
+    private var viewModeToggle: some View {
+        Picker("View", selection: $viewMode) {
+            ForEach(LibraryViewMode.allCases, id: \.self) { mode in
+                Image(systemName: mode.icon)
+                    .tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .help("Switch between Grid and Table view")
     }
 
     private var multiSelectToggle: some View {
@@ -677,16 +707,30 @@ struct ContentView: View {
                             .foregroundColor(.secondary)
                     }
                 } else {
-                    BookGridView(
-                        books: displayedBooks,
-                        bookGroups: displayedBookGroups,
-                        selectedBook: $selectedBook,
-                        selectedBooks: $selectedBooks,
-                        isMultiSelectMode: $isMultiSelectMode,
-                        libraryService: libraryService,
-                        kindleDevices: Array(kindleDevices),
-                        viewContext: viewContext
-                    )
+                    switch viewMode {
+                    case .grid:
+                        BookGridView(
+                            books: displayedBooks,
+                            bookGroups: displayedBookGroups,
+                            selectedBook: $selectedBook,
+                            selectedBooks: $selectedBooks,
+                            isMultiSelectMode: $isMultiSelectMode,
+                            libraryService: libraryService,
+                            kindleDevices: Array(kindleDevices),
+                            viewContext: viewContext
+                        )
+                    case .table:
+                        BookTableView(
+                            books: displayedBooks,
+                            bookGroups: displayedBookGroups,
+                            selectedBook: $selectedBook,
+                            selectedBooks: $selectedBooks,
+                            isMultiSelectMode: $isMultiSelectMode,
+                            libraryService: libraryService,
+                            kindleDevices: Array(kindleDevices),
+                            viewContext: viewContext
+                        )
+                    }
                 }
             }
 
@@ -1041,6 +1085,294 @@ struct BookGridView: View {
     /// Opens the book in Apple Books app
     private func openBookInAppleBooks(_ book: Book) {
         BookFileHelper.openInAppleBooks(book)
+    }
+}
+
+// MARK: - Book Table View
+
+/// Table view for displaying books in a sortable, column-based layout
+struct BookTableView: View {
+    let books: [Book]
+    let bookGroups: [BookGroup]
+    @Binding var selectedBook: Book?
+    @Binding var selectedBooks: Set<NSManagedObjectID>
+    @Binding var isMultiSelectMode: Bool
+    let libraryService: LibraryService
+    let kindleDevices: [KindleDevice]
+    let viewContext: NSManagedObjectContext
+
+    @State private var selection: Set<String> = []
+    @State private var showingGroupDetail: BookGroup?
+
+    var body: some View {
+        Table(bookGroups, selection: $selection) {
+            TableColumn("Title") { group in
+                Text(group.primaryBook.title ?? "Unknown")
+                    .lineLimit(1)
+            }
+            .width(min: 150, ideal: 250)
+
+            TableColumn("Author") { group in
+                Text(authorText(for: group))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .width(min: 100, ideal: 150)
+
+            TableColumn("Year") { group in
+                Text(yearText(for: group))
+                    .foregroundColor(.secondary)
+            }
+            .width(min: 50, ideal: 60)
+
+            TableColumn("Date Added") { group in
+                Text(dateAddedText(for: group))
+                    .foregroundColor(.secondary)
+            }
+            .width(min: 80, ideal: 100)
+
+            TableColumn("Formats") { group in
+                formatsView(for: group)
+            }
+            .width(min: 80, ideal: 120)
+
+            TableColumn("Size") { group in
+                Text(ByteCountFormatter.string(fromByteCount: group.totalSize, countStyle: .file))
+                    .foregroundColor(.secondary)
+                    .monospacedDigit()
+            }
+            .width(min: 60, ideal: 80)
+
+            TableColumn("Tags") { group in
+                Text(tagsText(for: group))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .width(min: 80, ideal: 150)
+        }
+        .contextMenu(forSelectionType: String.self) { selectedIds in
+            if let groupId = selectedIds.first,
+               let group = bookGroups.first(where: { $0.id == groupId }) {
+                BookGroupContextMenuContent(
+                    group: group,
+                    libraryService: libraryService,
+                    kindleDevices: kindleDevices,
+                    viewContext: viewContext,
+                    showingDetailFor: $showingGroupDetail
+                )
+            }
+        } primaryAction: { selectedIds in
+            // Double-click action - open book
+            if let groupId = selectedIds.first,
+               let group = bookGroups.first(where: { $0.id == groupId }),
+               let book = group.preferredForReading {
+                BookFileHelper.openInAppleBooks(book)
+            }
+        }
+        .onChange(of: selection) { newSelection in
+            // Sync table selection with app selection state
+            selectedBooks.removeAll()
+            for groupId in newSelection {
+                if let group = bookGroups.first(where: { $0.id == groupId }) {
+                    for book in group.books {
+                        selectedBooks.insert(book.objectID)
+                    }
+                }
+            }
+            isMultiSelectMode = !selectedBooks.isEmpty
+        }
+        .sheet(item: $showingGroupDetail) { group in
+            BookGroupDetailView(group: group, libraryService: libraryService, viewContext: viewContext)
+        }
+    }
+
+    // MARK: - Helper Functions
+
+    private func authorText(for group: BookGroup) -> String {
+        if let authors = group.primaryBook.authors as? Set<Author>, !authors.isEmpty {
+            return authors.compactMap { $0.name }.sorted().joined(separator: ", ")
+        }
+        return "—"
+    }
+
+    private func yearText(for group: BookGroup) -> String {
+        if let date = group.primaryBook.publishedDate {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy"
+            return formatter.string(from: date)
+        }
+        return "—"
+    }
+
+    private func dateAddedText(for group: BookGroup) -> String {
+        if let date = group.primaryBook.dateAdded {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .none
+            return formatter.string(from: date)
+        }
+        return "—"
+    }
+
+    private func tagsText(for group: BookGroup) -> String {
+        if let tags = group.primaryBook.tags as? Set<Tag>, !tags.isEmpty {
+            return tags.compactMap { $0.name }.sorted().joined(separator: ", ")
+        }
+        return "—"
+    }
+
+    @ViewBuilder
+    private func formatsView(for group: BookGroup) -> some View {
+        HStack(spacing: 4) {
+            ForEach(group.formats, id: \.self) { format in
+                Text(format.uppercased())
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(formatColor(for: format).opacity(0.15))
+                    .foregroundColor(formatColor(for: format))
+                    .clipShape(Capsule())
+            }
+        }
+    }
+
+    private func formatColor(for format: String) -> Color {
+        switch format.lowercased() {
+        case "epub": return .blue
+        case "pdf": return .red
+        case "mobi", "azw3": return .orange
+        case "cbz", "cbr": return .purple
+        default: return .gray
+        }
+    }
+}
+
+// MARK: - Book Group Context Menu Content
+
+/// Reusable context menu content for book groups (used by both grid and table views)
+struct BookGroupContextMenuContent: View {
+    let group: BookGroup
+    let libraryService: LibraryService
+    let kindleDevices: [KindleDevice]
+    let viewContext: NSManagedObjectContext
+    @Binding var showingDetailFor: BookGroup?
+
+    private var primaryBook: Book { group.primaryBook }
+
+    private func showNotification(title: String, message: String, isError: Bool = false) {
+        Task { @MainActor in
+            ToastNotificationManager.shared.show(title: title, message: message, isError: isError)
+        }
+    }
+
+    private func isOnDevice(_ device: KindleDevice) -> Bool {
+        group.books.contains { book in
+            guard let devices = book.kindleDevices as? Set<KindleDevice> else { return false }
+            return devices.contains(device)
+        }
+    }
+
+    var body: some View {
+        if let readingBook = group.preferredForReading {
+            Button("Open in Apple Books") {
+                BookFileHelper.openInAppleBooks(readingBook)
+            }
+        }
+
+        Button("Open with Default App") {
+            if let book = group.preferredForReading, let url = book.fileURL {
+                NSWorkspace.shared.open(url)
+            }
+        }
+
+        Button("Show in Finder") {
+            if let book = group.preferredForReading, let url = book.fileURL {
+                NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: "")
+            }
+        }
+
+        Divider()
+
+        Button("Get Info...") {
+            showingDetailFor = group
+        }
+
+        Divider()
+
+        Menu("Send to Kindle...") {
+            if kindleDevices.isEmpty {
+                Text("No Kindle devices configured")
+                    .foregroundColor(.secondary)
+            } else {
+                if let kindleBook = group.preferredForKindle {
+                    Text("Will send: \(kindleBook.format?.uppercased() ?? "Unknown")")
+                        .font(.caption)
+
+                    Divider()
+
+                    ForEach(kindleDevices, id: \.objectID) { device in
+                        Button {
+                            Task { await sendToKindle(book: kindleBook, device: device) }
+                        } label: {
+                            HStack {
+                                Text(device.name ?? "Kindle")
+                                if isOnDevice(device) {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Divider()
+
+        Button("Delete", role: .destructive) {
+            for book in group.books {
+                try? libraryService.deleteBook(book)
+            }
+        }
+    }
+
+    private func sendToKindle(book: Book, device: KindleDevice) async {
+        guard let kindleEmail = device.email else {
+            showNotification(title: "No Kindle Email", message: "Please configure an email for \(device.name ?? "this Kindle").", isError: true)
+            return
+        }
+
+        let sendService = SendToKindleService.shared
+        let isConfigured = await sendService.isConfigured
+        guard isConfigured else {
+            showNotification(title: "Email Not Configured", message: "Please configure SMTP email settings in Kindle Settings.", isError: true)
+            return
+        }
+
+        guard let (accessibleURL, didStartAccessing) = BookFileHelper.resolveSecurityScopedURL(for: book) else {
+            showNotification(title: "Access Denied", message: "Could not access the book file. Try re-importing.", isError: true)
+            return
+        }
+
+        defer {
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let result = try await sendService.send(fileURL: accessibleURL, to: kindleEmail, bookTitle: book.title ?? "Untitled")
+            if result.success {
+                await MainActor.run {
+                    book.addToKindleDevices(device)
+                    device.lastSyncDate = Date()
+                    try? viewContext.save()
+                }
+                showNotification(title: "Sent to Kindle", message: "\(book.title ?? "Book") sent to \(device.name ?? "Kindle")")
+            }
+        } catch {
+            showNotification(title: "Send Failed", message: error.localizedDescription, isError: true)
+        }
     }
 }
 
