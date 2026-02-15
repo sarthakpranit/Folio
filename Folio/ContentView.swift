@@ -710,6 +710,16 @@ struct ContentView: View {
                 ConversionProgressOverlay(progress: conversionProgress, status: conversionStatus)
             }
         }
+        .overlay(alignment: .top) {
+            if libraryService.isImporting {
+                ImportProgressBar(
+                    progress: libraryService.importProgress,
+                    currentBook: libraryService.importCurrentBookName,
+                    current: libraryService.importCurrent,
+                    total: libraryService.importTotal
+                )
+            }
+        }
         .overlay(alignment: .bottom) {
             ToastView(manager: ToastNotificationManager.shared)
         }
@@ -1074,12 +1084,12 @@ struct BookGridView: View {
     @State private var showingGroupDetail: BookGroup?
 
     private let columns = [
-        GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 20)
+        GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 20, alignment: .top)
     ]
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 20) {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
                 ForEach(bookGroups) { group in
                     BookGroupGridItemView(
                         group: group,
@@ -3615,6 +3625,63 @@ struct BookDetailView: View {
         } catch {
             print("Failed to fetch cover image: \(error)")
         }
+    }
+}
+
+// MARK: - Import Progress Bar
+
+/// A progress bar shown at the top of the window during book import
+struct ImportProgressBar: View {
+    let progress: Double
+    let currentBook: String
+    let current: Int
+    let total: Int
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Progress bar
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Rectangle()
+                        .fill(Color.accentColor.opacity(0.2))
+
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(width: geometry.size.width * progress)
+                }
+            }
+            .frame(height: 4)
+
+            // Info bar
+            HStack(spacing: 12) {
+                ProgressView()
+                    .scaleEffect(0.7)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Importing \(current) of \(total)")
+                        .font(.caption)
+                        .fontWeight(.medium)
+
+                    Text(currentBook)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer()
+
+                Text("\(Int(progress * 100))%")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial)
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
+        .animation(.easeInOut(duration: 0.3), value: progress)
     }
 }
 

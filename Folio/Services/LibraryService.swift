@@ -26,6 +26,13 @@ class LibraryService: ObservableObject {
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var error: Error?
 
+    // Import progress tracking
+    @Published private(set) var isImporting: Bool = false
+    @Published private(set) var importProgress: Double = 0
+    @Published private(set) var importTotal: Int = 0
+    @Published private(set) var importCurrent: Int = 0
+    @Published private(set) var importCurrentBookName: String = ""
+
     /// Supported import formats
     let supportedExtensions = ["epub", "mobi", "azw3", "pdf", "cbz", "cbr", "fb2", "txt", "rtf"]
 
@@ -172,37 +179,98 @@ class LibraryService: ObservableObject {
     /// Import multiple books from URLs (e.g., from drag and drop)
     func importBooks(from urls: [URL]) async -> ImportResult {
         isLoading = true
-        defer { isLoading = false }
+        isImporting = true
+        importProgress = 0
+        importCurrent = 0
+        importCurrentBookName = "Scanning files..."
+
+        defer {
+            isLoading = false
+            isImporting = false
+            importProgress = 1.0
+            importCurrentBookName = ""
+        }
 
         var imported = 0
         var failed = 0
         var errors: [String] = []
 
+        // First, collect all files to import (for progress calculation)
+        var filesToImport: [URL] = []
         for url in urls {
-            do {
-                // Start accessing security-scoped resource
-                let accessing = url.startAccessingSecurityScopedResource()
-                defer {
-                    if accessing {
-                        url.stopAccessingSecurityScopedResource()
-                    }
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessing {
+                    url.stopAccessingSecurityScopedResource()
                 }
+            }
 
-                if url.hasDirectoryPath {
-                    // Import all ebooks from directory
-                    let count = try await importBooksFromDirectory(url)
-                    imported += count
-                } else if isValidEbookFile(url) {
-                    try addBook(from: url)
-                    imported += 1
+            if url.hasDirectoryPath {
+                // Collect files from directory
+                if let files = collectEbookFiles(from: url) {
+                    filesToImport.append(contentsOf: files)
                 }
-            } catch {
-                failed += 1
-                errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            } else if isValidEbookFile(url) {
+                filesToImport.append(url)
             }
         }
 
+        importTotal = filesToImport.count
+        guard importTotal > 0 else {
+            return ImportResult(imported: 0, failed: 0, errors: ["No valid ebook files found"])
+        }
+
+        // Now import each file with progress updates
+        for (index, fileURL) in filesToImport.enumerated() {
+            importCurrent = index + 1
+            importCurrentBookName = fileURL.lastPathComponent
+            importProgress = Double(index) / Double(importTotal)
+
+            do {
+                let accessing = fileURL.startAccessingSecurityScopedResource()
+                defer {
+                    if accessing {
+                        fileURL.stopAccessingSecurityScopedResource()
+                    }
+                }
+
+                try addBook(from: fileURL)
+                imported += 1
+            } catch {
+                failed += 1
+                errors.append("\(fileURL.lastPathComponent): \(error.localizedDescription)")
+            }
+
+            // Small delay to allow UI updates
+            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        }
+
+        importProgress = 1.0
         return ImportResult(imported: imported, failed: failed, errors: errors)
+    }
+
+    /// Collect all ebook files from a directory (for progress calculation)
+    private func collectEbookFiles(from directoryURL: URL) -> [URL]? {
+        let fileManager = FileManager.default
+
+        guard let enumerator = fileManager.enumerator(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return nil
+        }
+
+        var files: [URL] = []
+        for case let fileURL as URL in enumerator {
+            guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                  resourceValues.isRegularFile == true,
+                  isValidEbookFile(fileURL) else {
+                continue
+            }
+            files.append(fileURL)
+        }
+        return files
     }
 
     /// Import all ebooks from a directory (recursively searches all subdirectories)
