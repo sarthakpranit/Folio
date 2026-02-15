@@ -10,6 +10,87 @@ import CoreData
 import FolioCore
 import Combine
 
+// MARK: - Toast Notification Manager
+
+/// Manages toast-style notifications for user feedback
+@MainActor
+class ToastNotificationManager: ObservableObject {
+    static let shared = ToastNotificationManager()
+
+    @Published var isShowing = false
+    @Published var title: String = ""
+    @Published var message: String = ""
+    @Published var isError: Bool = false
+
+    private var dismissTask: Task<Void, Never>?
+
+    func show(title: String, message: String, isError: Bool = false) {
+        self.title = title
+        self.message = message
+        self.isError = isError
+        self.isShowing = true
+
+        // Auto-dismiss after delay
+        dismissTask?.cancel()
+        dismissTask = Task {
+            try? await Task.sleep(nanoseconds: isError ? 4_000_000_000 : 3_000_000_000)
+            if !Task.isCancelled {
+                self.isShowing = false
+            }
+        }
+    }
+
+    func dismiss() {
+        dismissTask?.cancel()
+        isShowing = false
+    }
+}
+
+// MARK: - Toast View
+
+struct ToastView: View {
+    @ObservedObject var manager: ToastNotificationManager
+
+    var body: some View {
+        if manager.isShowing {
+            VStack {
+                Spacer()
+                HStack(spacing: 12) {
+                    Image(systemName: manager.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundColor(manager.isError ? .orange : .green)
+                        .font(.title2)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(manager.title)
+                            .font(.headline)
+                        Text(manager.message)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        manager.dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding()
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+                .padding(.horizontal)
+                .padding(.bottom, 20)
+            }
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .animation(.spring(response: 0.3), value: manager.isShowing)
+        }
+    }
+}
+
 // MARK: - Book File Helper
 
 /// Shared utility for handling security-scoped file access
@@ -295,6 +376,11 @@ struct ContentView: View {
         return result
     }
 
+    /// Displayed books grouped by content (ISBN or title)
+    var displayedBookGroups: [BookGroup] {
+        BookGroupingService.groupBooks(displayedBooks)
+    }
+
     /// Sort books based on current sort option
     private func sortBooks(_ books: [Book]) -> [Book] {
         switch currentSortOption {
@@ -542,11 +628,30 @@ struct ContentView: View {
                 ConversionProgressOverlay(progress: conversionProgress, status: conversionStatus)
             }
         }
+        .overlay(alignment: .bottom) {
+            ToastView(manager: ToastNotificationManager.shared)
+        }
         .navigationTitle(navigationTitle)
         .id(refreshID)
         .onReceive(NotificationCenter.default.publisher(for: .NSManagedObjectContextDidSave, object: viewContext)) { _ in
             refreshID = UUID()
         }
+        // Cmd+A to select all books
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "a" {
+                    selectAllBooks()
+                    return nil // Consume the event
+                }
+                return event
+            }
+        }
+    }
+
+    /// Select all books in the current view
+    private func selectAllBooks() {
+        isMultiSelectMode = true
+        selectedBooks = Set(displayedBooks.map { $0.objectID })
     }
 
     @ViewBuilder
@@ -574,6 +679,7 @@ struct ContentView: View {
                 } else {
                     BookGridView(
                         books: displayedBooks,
+                        bookGroups: displayedBookGroups,
                         selectedBook: $selectedBook,
                         selectedBooks: $selectedBooks,
                         isMultiSelectMode: $isMultiSelectMode,
@@ -861,6 +967,7 @@ struct SidebarView: View {
 
 struct BookGridView: View {
     let books: [Book]
+    let bookGroups: [BookGroup]
     @Binding var selectedBook: Book?
     @Binding var selectedBooks: Set<NSManagedObjectID>
     @Binding var isMultiSelectMode: Bool
@@ -868,6 +975,7 @@ struct BookGridView: View {
     let kindleDevices: [KindleDevice]
     let viewContext: NSManagedObjectContext
     @State private var showingBookDetail: Book?
+    @State private var showingGroupDetail: BookGroup?
 
     private let columns = [
         GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 20)
@@ -876,49 +984,1052 @@ struct BookGridView: View {
     var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 20) {
-                ForEach(books, id: \.objectID) { book in
-                    BookGridItemView(
-                        book: book,
-                        isSelected: selectedBook == book || selectedBooks.contains(book.objectID),
+                ForEach(bookGroups) { group in
+                    BookGroupGridItemView(
+                        group: group,
+                        isSelected: isGroupSelected(group),
                         isInMultiSelectMode: isMultiSelectMode,
-                        isMultiSelected: selectedBooks.contains(book.objectID),
+                        isMultiSelected: isGroupMultiSelected(group),
                         libraryService: libraryService,
                         kindleDevices: kindleDevices,
                         viewContext: viewContext,
-                        showingDetailFor: $showingBookDetail
+                        showingDetailFor: $showingGroupDetail
                     )
                     .onTapGesture(count: 2) {
                         if !isMultiSelectMode {
-                            openBookInAppleBooks(book)
+                            openBookInAppleBooks(group.preferredForReading ?? group.primaryBook)
                         }
                     }
                     .onTapGesture {
                         if isMultiSelectMode {
-                            toggleSelection(book)
+                            toggleGroupSelection(group)
                         } else {
-                            selectedBook = book
+                            selectedBook = group.primaryBook
                         }
                     }
                 }
             }
             .padding()
         }
-        .sheet(item: $showingBookDetail) { book in
-            BookDetailView(book: book, libraryService: libraryService)
+        .sheet(item: $showingGroupDetail) { group in
+            BookGroupDetailView(group: group, libraryService: libraryService, viewContext: viewContext)
         }
     }
 
-    private func toggleSelection(_ book: Book) {
-        if selectedBooks.contains(book.objectID) {
-            selectedBooks.remove(book.objectID)
+    private func isGroupSelected(_ group: BookGroup) -> Bool {
+        group.books.contains { selectedBook == $0 || selectedBooks.contains($0.objectID) }
+    }
+
+    private func isGroupMultiSelected(_ group: BookGroup) -> Bool {
+        group.books.contains { selectedBooks.contains($0.objectID) }
+    }
+
+    private func toggleGroupSelection(_ group: BookGroup) {
+        // Toggle all books in the group together
+        let allSelected = group.books.allSatisfy { selectedBooks.contains($0.objectID) }
+        if allSelected {
+            for book in group.books {
+                selectedBooks.remove(book.objectID)
+            }
         } else {
-            selectedBooks.insert(book.objectID)
+            for book in group.books {
+                selectedBooks.insert(book.objectID)
+            }
         }
     }
 
     /// Opens the book in Apple Books app
     private func openBookInAppleBooks(_ book: Book) {
         BookFileHelper.openInAppleBooks(book)
+    }
+}
+
+// MARK: - Book Group Grid Item
+
+/// Grid item view for displaying a grouped book with multiple format variants
+struct BookGroupGridItemView: View {
+    let group: BookGroup
+    let isSelected: Bool
+    let isInMultiSelectMode: Bool
+    let isMultiSelected: Bool
+    let libraryService: LibraryService
+    let kindleDevices: [KindleDevice]
+    let viewContext: NSManagedObjectContext
+    @Binding var showingDetailFor: BookGroup?
+    @State private var isLoadingMetadata = false
+
+    /// The primary book used for display (best metadata)
+    private var primaryBook: Book { group.primaryBook }
+
+    /// Check if any book in group is synced to any Kindle
+    private var isOnKindle: Bool {
+        group.books.contains { book in
+            guard let devices = book.kindleDevices as? Set<KindleDevice> else { return false }
+            return !devices.isEmpty
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Cover image
+            ZStack(alignment: .topTrailing) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(coverBackgroundGradient)
+
+                    if let coverData = primaryBook.coverImageData,
+                       let nsImage = NSImage(data: coverData) {
+                        Image(nsImage: nsImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        VStack(spacing: 8) {
+                            if isLoadingMetadata {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            } else {
+                                Image(systemName: formatIcon)
+                                    .font(.system(size: 32))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+
+                            Text(primaryBook.format?.uppercased() ?? "")
+                                .font(.caption2)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white.opacity(0.9))
+                        }
+                    }
+                }
+
+                // Multi-select checkbox
+                if isInMultiSelectMode {
+                    ZStack {
+                        Circle()
+                            .fill(isMultiSelected ? Color.accentColor : Color.white.opacity(0.9))
+                            .frame(width: 24, height: 24)
+                            .shadow(radius: 2)
+
+                        if isMultiSelected {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .padding(8)
+                }
+
+                // Kindle sync indicator
+                if isOnKindle && !isInMultiSelectMode {
+                    HStack(spacing: 2) {
+                        Image(systemName: "flame.fill")
+                            .font(.system(size: 10))
+                        Text("Kindle")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.orange.opacity(0.9))
+                    .clipShape(Capsule())
+                    .padding(6)
+                }
+            }
+            .frame(width: 150, height: 200)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
+            )
+            .shadow(color: .black.opacity(0.2), radius: isSelected ? 8 : 4, y: 2)
+
+            // Title
+            Text(primaryBook.title ?? "Unknown")
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .lineLimit(2)
+                .foregroundColor(.primary)
+
+            // Authors
+            if let authors = primaryBook.authors as? Set<Author>, !authors.isEmpty {
+                Text(authors.compactMap { $0.name }.joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            // Format badges (showing all formats) and total file size
+            HStack(spacing: 4) {
+                ForEach(group.formats, id: \.self) { format in
+                    Text(format.uppercased())
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(formatColor(for: format).opacity(0.15))
+                        .foregroundColor(formatColor(for: format))
+                        .clipShape(Capsule())
+                }
+
+                Spacer()
+
+                Text(formattedTotalSize)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(width: 150)
+        .contextMenu {
+            BookGroupContextMenu(
+                group: group,
+                libraryService: libraryService,
+                kindleDevices: kindleDevices,
+                viewContext: viewContext,
+                isLoadingMetadata: $isLoadingMetadata,
+                showingDetailFor: $showingDetailFor
+            )
+        }
+        .task {
+            // Auto-fetch metadata if primary book has no cover
+            if primaryBook.coverImageData == nil && primaryBook.coverImageURL == nil {
+                await fetchMetadataIfNeeded()
+            }
+        }
+    }
+
+    private var coverBackgroundGradient: LinearGradient {
+        let colors: [Color] = {
+            switch primaryBook.format?.lowercased() {
+            case "epub": return [Color.blue.opacity(0.6), Color.blue.opacity(0.8)]
+            case "pdf": return [Color.red.opacity(0.6), Color.red.opacity(0.8)]
+            case "mobi", "azw3": return [Color.orange.opacity(0.6), Color.orange.opacity(0.8)]
+            case "cbz", "cbr": return [Color.purple.opacity(0.6), Color.purple.opacity(0.8)]
+            default: return [Color.gray.opacity(0.4), Color.gray.opacity(0.6)]
+            }
+        }()
+        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    private var formatIcon: String {
+        switch primaryBook.format?.lowercased() {
+        case "epub": return "book.closed.fill"
+        case "pdf": return "doc.text.fill"
+        case "mobi", "azw3": return "flame.fill"
+        case "cbz", "cbr": return "photo.stack.fill"
+        case "txt": return "doc.plaintext.fill"
+        default: return "doc.fill"
+        }
+    }
+
+    private func formatColor(for format: String) -> Color {
+        switch format.lowercased() {
+        case "epub": return .blue
+        case "pdf": return .red
+        case "mobi", "azw3": return .orange
+        case "cbz", "cbr": return .purple
+        default: return .gray
+        }
+    }
+
+    private var formattedTotalSize: String {
+        ByteCountFormatter.string(fromByteCount: group.totalSize, countStyle: .file)
+    }
+
+    private func fetchMetadataIfNeeded() async {
+        guard !isLoadingMetadata else { return }
+
+        let title = primaryBook.title ?? ""
+        guard !title.isEmpty else { return }
+
+        isLoadingMetadata = true
+        defer { isLoadingMetadata = false }
+
+        do {
+            let metadataService = MetadataService()
+            let results = try await metadataService.fetchMetadata(title: title, author: nil)
+
+            if let metadata = results.first {
+                await MainActor.run {
+                    // Update primary book with fetched metadata
+                    if let isbn = metadata.isbn { primaryBook.isbn = isbn }
+                    if let isbn13 = metadata.isbn13 { primaryBook.isbn13 = isbn13 }
+                    if let publisher = metadata.publisher { primaryBook.publisher = publisher }
+                    if let summary = metadata.summary { primaryBook.summary = summary }
+                    if let pageCount = metadata.pageCount { primaryBook.pageCount = Int32(pageCount) }
+                    if let language = metadata.language { primaryBook.language = language }
+
+                    // Also update ISBN on other books in group for better grouping
+                    for book in group.books {
+                        if let isbn13 = metadata.isbn13 { book.isbn13 = isbn13 }
+                        if let isbn = metadata.isbn { book.isbn = isbn }
+                    }
+
+                    // Create and link Author entities
+                    if !metadata.authors.isEmpty {
+                        primaryBook.authors = nil
+                        for authorName in metadata.authors {
+                            let author = libraryService.findOrCreateAuthor(name: authorName)
+                            primaryBook.addToAuthors(author)
+                        }
+                    }
+
+                    // Create and link Series entity
+                    if let seriesName = metadata.series, !seriesName.isEmpty {
+                        let series = libraryService.findOrCreateSeries(name: seriesName)
+                        primaryBook.series = series
+                        if let index = metadata.seriesIndex {
+                            primaryBook.seriesIndex = index
+                        }
+                    }
+
+                    // Create and link Tag entities
+                    if !metadata.tags.isEmpty {
+                        for tagName in metadata.tags {
+                            let tag = libraryService.findOrCreateTag(name: tagName)
+                            primaryBook.addToTags(tag)
+                        }
+                    }
+
+                    // Fetch cover image if URL is available
+                    if let coverURL = metadata.coverImageURL {
+                        primaryBook.coverImageURL = coverURL
+                        Task {
+                            await fetchCoverImage(from: coverURL)
+                        }
+                    }
+
+                    try? primaryBook.managedObjectContext?.save()
+                    libraryService.refresh()
+                }
+            }
+        } catch {
+            print("[Metadata] ERROR for '\(title)': \(error)")
+        }
+    }
+
+    private func fetchCoverImage(from url: URL) async {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            await MainActor.run {
+                primaryBook.coverImageData = data
+                try? primaryBook.managedObjectContext?.save()
+            }
+        } catch {
+            print("Failed to fetch cover image: \(error)")
+        }
+    }
+}
+
+// MARK: - Book Group Context Menu
+
+/// Context menu for a grouped book with actions for all formats
+struct BookGroupContextMenu: View {
+    let group: BookGroup
+    let libraryService: LibraryService
+    let kindleDevices: [KindleDevice]
+    let viewContext: NSManagedObjectContext
+    @Binding var isLoadingMetadata: Bool
+    @Binding var showingDetailFor: BookGroup?
+
+    private var primaryBook: Book { group.primaryBook }
+
+    // Show user feedback via toast notification
+    private func showNotification(title: String, message: String, isError: Bool = false) {
+        Task { @MainActor in
+            ToastNotificationManager.shared.show(title: title, message: message, isError: isError)
+        }
+    }
+
+    /// Check if any book in group is synced to a specific Kindle
+    private func isOnDevice(_ device: KindleDevice) -> Bool {
+        group.books.contains { book in
+            guard let devices = book.kindleDevices as? Set<KindleDevice> else { return false }
+            return devices.contains(device)
+        }
+    }
+
+    var body: some View {
+        // Open actions - prefer reading format
+        if let readingBook = group.preferredForReading {
+            Button("Open in Apple Books") {
+                BookFileHelper.openInAppleBooks(readingBook)
+            }
+        }
+
+        Button("Open with Default App") {
+            if let book = group.preferredForReading, let url = book.fileURL {
+                NSWorkspace.shared.open(url)
+            }
+        }
+
+        // Show all formats in Finder
+        Button("Show All Formats in Finder") {
+            for book in group.books {
+                if let url = book.fileURL {
+                    NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: "")
+                }
+            }
+        }
+
+        Divider()
+
+        Button("Get Info...") {
+            showingDetailFor = group
+        }
+
+        Button("Fetch Metadata") {
+            Task {
+                await fetchMetadata()
+            }
+        }
+        .disabled(isLoadingMetadata)
+
+        Divider()
+
+        // Send to Kindle - uses preferred Kindle format (MOBI > AZW3 > EPUB)
+        Menu("Send to Kindle...") {
+            if kindleDevices.isEmpty {
+                Text("No Kindle devices configured")
+                    .foregroundColor(.secondary)
+            } else {
+                if let kindleBook = group.preferredForKindle {
+                    Text("Will send: \(kindleBook.format?.uppercased() ?? "Unknown")")
+                        .font(.caption)
+
+                    Divider()
+
+                    ForEach(kindleDevices, id: \.objectID) { device in
+                        Button {
+                            Task { await sendToKindle(book: kindleBook, device: device) }
+                        } label: {
+                            HStack {
+                                Text(device.name ?? "Kindle")
+                                if isOnDevice(device) {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Individual format actions
+        if group.hasMultipleFormats {
+            Menu("Format Actions...") {
+                ForEach(group.books.sorted(by: { ($0.format ?? "") < ($1.format ?? "") }), id: \.objectID) { book in
+                    Menu(book.format?.uppercased() ?? "Unknown") {
+                        Button("Open") {
+                            BookFileHelper.openInAppleBooks(book)
+                        }
+
+                        Button("Show in Finder") {
+                            if let url = book.fileURL {
+                                NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: "")
+                            }
+                        }
+
+                        Divider()
+
+                        Button("Delete \(book.format?.uppercased() ?? "") Only", role: .destructive) {
+                            try? libraryService.deleteBook(book)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mark as synced (manual tracking)
+        if !kindleDevices.isEmpty {
+            Menu("Mark as on Kindle...") {
+                ForEach(kindleDevices, id: \.objectID) { device in
+                    Button {
+                        toggleKindleSync(device: device)
+                    } label: {
+                        HStack {
+                            Text(device.name ?? "Kindle")
+                            if isOnDevice(device) {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Divider()
+
+        Button("Delete All Formats", role: .destructive) {
+            for book in group.books {
+                try? libraryService.deleteBook(book)
+            }
+        }
+    }
+
+    private func sendToKindle(book: Book, device: KindleDevice) async {
+        guard let kindleEmail = device.email else {
+            showNotification(
+                title: "No Kindle Email",
+                message: "Please configure an email for \(device.name ?? "this Kindle").",
+                isError: true
+            )
+            return
+        }
+
+        let sendService = SendToKindleService.shared
+
+        let isConfigured = await sendService.isConfigured
+        guard isConfigured else {
+            showNotification(
+                title: "Email Not Configured",
+                message: "Please configure SMTP email settings in Kindle Settings.",
+                isError: true
+            )
+            return
+        }
+
+        guard let (accessibleURL, didStartAccessing) = BookFileHelper.resolveSecurityScopedURL(for: book) else {
+            showNotification(
+                title: "Access Denied",
+                message: "Could not access the book file. Try re-importing.",
+                isError: true
+            )
+            return
+        }
+
+        defer {
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let result = try await sendService.send(
+                fileURL: accessibleURL,
+                to: kindleEmail,
+                bookTitle: book.title ?? "Untitled"
+            )
+
+            if result.success {
+                await MainActor.run {
+                    book.addToKindleDevices(device)
+                    device.lastSyncDate = Date()
+                    try? viewContext.save()
+                }
+                showNotification(
+                    title: "Sent to Kindle",
+                    message: "\(book.title ?? "Book") (\(book.format?.uppercased() ?? "")) sent to \(device.name ?? "Kindle")"
+                )
+            }
+        } catch {
+            showNotification(
+                title: "Send Failed",
+                message: error.localizedDescription,
+                isError: true
+            )
+        }
+    }
+
+    private func toggleKindleSync(device: KindleDevice) {
+        // Toggle sync for all books in the group
+        let isCurrentlyOnDevice = isOnDevice(device)
+
+        for book in group.books {
+            if isCurrentlyOnDevice {
+                book.removeFromKindleDevices(device)
+            } else {
+                book.addToKindleDevices(device)
+            }
+        }
+        try? viewContext.save()
+    }
+
+    private func fetchMetadata() async {
+        isLoadingMetadata = true
+        defer { isLoadingMetadata = false }
+
+        let title = primaryBook.title ?? ""
+        let authorName = (primaryBook.authors as? Set<Author>)?.first?.name
+
+        do {
+            let metadataService = MetadataService()
+            let results = try await metadataService.fetchMetadata(title: title, author: authorName)
+            if let metadata = results.first {
+                await MainActor.run {
+                    // Update all books in group with ISBNs for better grouping
+                    for book in group.books {
+                        if let isbn = metadata.isbn { book.isbn = isbn }
+                        if let isbn13 = metadata.isbn13 { book.isbn13 = isbn13 }
+                    }
+
+                    // Update primary book with full metadata
+                    if let publisher = metadata.publisher { primaryBook.publisher = publisher }
+                    if let summary = metadata.summary { primaryBook.summary = summary }
+                    if let pageCount = metadata.pageCount { primaryBook.pageCount = Int32(pageCount) }
+                    if let language = metadata.language { primaryBook.language = language }
+
+                    if let coverURL = metadata.coverImageURL {
+                        primaryBook.coverImageURL = coverURL
+                        Task {
+                            if let (data, _) = try? await URLSession.shared.data(from: coverURL) {
+                                await MainActor.run {
+                                    primaryBook.coverImageData = data
+                                    try? primaryBook.managedObjectContext?.save()
+                                }
+                            }
+                        }
+                    }
+
+                    try? primaryBook.managedObjectContext?.save()
+                    libraryService.refresh()
+                }
+            }
+        } catch {
+            print("Failed to fetch metadata: \(error)")
+        }
+    }
+}
+
+// MARK: - Book Group Detail View
+
+/// Detail view for a book group showing all format variants
+struct BookGroupDetailView: View {
+    let group: BookGroup
+    let libraryService: LibraryService
+    let viewContext: NSManagedObjectContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var isLoadingMetadata = false
+    @State private var metadataError: String?
+
+    private var primaryBook: Book { group.primaryBook }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header with close button
+            HStack {
+                Text("Book Details")
+                    .font(.headline)
+                Spacer()
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Cover and basic info
+                    HStack(alignment: .top, spacing: 20) {
+                        // Cover image
+                        coverImageView
+                            .frame(width: 150, height: 220)
+
+                        // Basic info
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(primaryBook.title ?? "Unknown Title")
+                                .font(.title2)
+                                .fontWeight(.bold)
+
+                            if let authors = primaryBook.authors as? Set<Author>, !authors.isEmpty {
+                                Text(authors.compactMap { $0.name }.joined(separator: ", "))
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            // All format badges
+                            HStack(spacing: 6) {
+                                ForEach(group.formats, id: \.self) { format in
+                                    Text(format.uppercased())
+                                        .font(.caption2)
+                                        .fontWeight(.medium)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(formatColor(for: format).opacity(0.15))
+                                        .foregroundColor(formatColor(for: format))
+                                        .clipShape(Capsule())
+                                }
+                            }
+
+                            Text("Total: \(formattedTotalSize)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            if let series = primaryBook.series, let name = series.name {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "text.book.closed")
+                                        .foregroundColor(.secondary)
+                                    Text(name)
+                                        .font(.subheadline)
+                                    if primaryBook.seriesIndex > 0 {
+                                        Text("#\(Int(primaryBook.seriesIndex))")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+
+                            Spacer()
+
+                            // Action buttons
+                            HStack(spacing: 12) {
+                                Button(action: openPreferredFormat) {
+                                    Label("Read", systemImage: "book")
+                                }
+                                .buttonStyle(.borderedProminent)
+
+                                Button(action: refreshMetadata) {
+                                    if isLoadingMetadata {
+                                        ProgressView()
+                                            .scaleEffect(0.7)
+                                    } else {
+                                        Label("Refresh Metadata", systemImage: "arrow.clockwise")
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(isLoadingMetadata)
+                            }
+                        }
+                    }
+                    .padding()
+
+                    Divider()
+
+                    // Format variants section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Available Formats")
+                            .font(.headline)
+
+                        ForEach(group.books.sorted(by: { ($0.format ?? "") < ($1.format ?? "") }), id: \.objectID) { book in
+                            formatRow(for: book)
+                        }
+                    }
+                    .padding(.horizontal)
+
+                    Divider()
+
+                    // Metadata details
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Details")
+                            .font(.headline)
+
+                        LazyVGrid(columns: [
+                            GridItem(.flexible(), alignment: .leading),
+                            GridItem(.flexible(), alignment: .leading)
+                        ], spacing: 12) {
+                            metadataRow("Publisher", primaryBook.publisher)
+                            metadataRow("Language", primaryBook.language)
+                            metadataRow("Pages", primaryBook.pageCount > 0 ? "\(primaryBook.pageCount)" : nil)
+                            metadataRow("ISBN", primaryBook.isbn13 ?? primaryBook.isbn)
+                            metadataRow("Added", formatDate(primaryBook.dateAdded))
+                            metadataRow("Last Opened", formatDate(primaryBook.lastOpened))
+                        }
+                    }
+                    .padding(.horizontal)
+
+                    // Tags
+                    if let tags = primaryBook.tags as? Set<Tag>, !tags.isEmpty {
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Tags")
+                                .font(.headline)
+
+                            FlowLayout(spacing: 8) {
+                                ForEach(Array(tags).sorted(by: { ($0.name ?? "") < ($1.name ?? "") }), id: \.objectID) { tag in
+                                    Text(tag.name ?? "")
+                                        .font(.caption)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(Color.accentColor.opacity(0.15))
+                                        .foregroundColor(.accentColor)
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+
+                    // Summary
+                    if let summary = primaryBook.summary, !summary.isEmpty {
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Summary")
+                                .font(.headline)
+
+                            Text(summary)
+                                .font(.body)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal)
+                    }
+
+                    // Error message
+                    if let error = metadataError {
+                        Divider()
+
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundColor(.orange)
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding()
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(8)
+                        .padding(.horizontal)
+                    }
+                }
+                .padding(.bottom, 20)
+            }
+        }
+        .frame(minWidth: 550, minHeight: 500)
+        .frame(maxWidth: 650, maxHeight: 800)
+    }
+
+    @ViewBuilder
+    private func formatRow(for book: Book) -> some View {
+        HStack(spacing: 12) {
+            // Format badge
+            Text(book.format?.uppercased() ?? "")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .frame(width: 50)
+                .padding(.vertical, 6)
+                .background(formatColor(for: book.format ?? "").opacity(0.15))
+                .foregroundColor(formatColor(for: book.format ?? ""))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            // File size
+            Text(ByteCountFormatter.string(fromByteCount: book.fileSize, countStyle: .file))
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 70, alignment: .leading)
+
+            // File path (truncated)
+            if let url = book.fileURL {
+                Text(url.lastPathComponent)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer()
+
+            // Action buttons
+            Button(action: { BookFileHelper.openInAppleBooks(book) }) {
+                Image(systemName: "book")
+            }
+            .buttonStyle(.borderless)
+            .help("Open in Apple Books")
+
+            Button(action: {
+                if let url = book.fileURL {
+                    NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: "")
+                }
+            }) {
+                Image(systemName: "folder")
+            }
+            .buttonStyle(.borderless)
+            .help("Show in Finder")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.secondary.opacity(0.05))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private var coverImageView: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(coverBackgroundGradient)
+
+            if let coverData = primaryBook.coverImageData,
+               let nsImage = NSImage(data: coverData) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                VStack(spacing: 8) {
+                    if isLoadingMetadata {
+                        ProgressView()
+                    } else {
+                        Image(systemName: formatIcon)
+                            .font(.system(size: 40))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                    Text(primaryBook.format?.uppercased() ?? "")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white.opacity(0.9))
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+    }
+
+    private var coverBackgroundGradient: LinearGradient {
+        let colors: [Color] = {
+            switch primaryBook.format?.lowercased() {
+            case "epub": return [Color.blue.opacity(0.6), Color.blue.opacity(0.8)]
+            case "pdf": return [Color.red.opacity(0.6), Color.red.opacity(0.8)]
+            case "mobi", "azw3": return [Color.orange.opacity(0.6), Color.orange.opacity(0.8)]
+            case "cbz", "cbr": return [Color.purple.opacity(0.6), Color.purple.opacity(0.8)]
+            default: return [Color.gray.opacity(0.4), Color.gray.opacity(0.6)]
+            }
+        }()
+        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    private var formatIcon: String {
+        switch primaryBook.format?.lowercased() {
+        case "epub": return "book.closed.fill"
+        case "pdf": return "doc.text.fill"
+        case "mobi", "azw3": return "flame.fill"
+        case "cbz", "cbr": return "photo.stack.fill"
+        default: return "doc.fill"
+        }
+    }
+
+    private func formatColor(for format: String) -> Color {
+        switch format.lowercased() {
+        case "epub": return .blue
+        case "pdf": return .red
+        case "mobi", "azw3": return .orange
+        case "cbz", "cbr": return .purple
+        default: return .gray
+        }
+    }
+
+    private var formattedTotalSize: String {
+        ByteCountFormatter.string(fromByteCount: group.totalSize, countStyle: .file)
+    }
+
+    private func metadataRow(_ label: String, _ value: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(value ?? "—")
+                .font(.subheadline)
+        }
+    }
+
+    private func formatDate(_ date: Date?) -> String? {
+        guard let date = date else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+
+    private func openPreferredFormat() {
+        if let book = group.preferredForReading {
+            BookFileHelper.openInAppleBooks(book)
+        }
+    }
+
+    private func refreshMetadata() {
+        Task {
+            await fetchMetadata()
+        }
+    }
+
+    private func fetchMetadata() async {
+        guard !isLoadingMetadata else { return }
+
+        isLoadingMetadata = true
+        metadataError = nil
+        defer { isLoadingMetadata = false }
+
+        let title = primaryBook.title ?? ""
+        let authorName = (primaryBook.authors as? Set<Author>)?.first?.name
+
+        do {
+            let metadataService = MetadataService()
+            let results = try await metadataService.fetchMetadata(title: title, author: authorName)
+
+            if let metadata = results.first {
+                await MainActor.run {
+                    // Update all books in group with ISBNs
+                    for book in group.books {
+                        if let isbn = metadata.isbn { book.isbn = isbn }
+                        if let isbn13 = metadata.isbn13 { book.isbn13 = isbn13 }
+                    }
+
+                    // Update primary book with full metadata
+                    if let publisher = metadata.publisher { primaryBook.publisher = publisher }
+                    if let summary = metadata.summary { primaryBook.summary = summary }
+                    if let pageCount = metadata.pageCount { primaryBook.pageCount = Int32(pageCount) }
+                    if let language = metadata.language { primaryBook.language = language }
+
+                    // Create and link Author entities
+                    if !metadata.authors.isEmpty {
+                        primaryBook.authors = nil
+                        for authorName in metadata.authors {
+                            let author = libraryService.findOrCreateAuthor(name: authorName)
+                            primaryBook.addToAuthors(author)
+                        }
+                    }
+
+                    // Create and link Series entity
+                    if let seriesName = metadata.series, !seriesName.isEmpty {
+                        let series = libraryService.findOrCreateSeries(name: seriesName)
+                        primaryBook.series = series
+                        if let index = metadata.seriesIndex {
+                            primaryBook.seriesIndex = index
+                        }
+                    }
+
+                    // Create and link Tag entities
+                    if !metadata.tags.isEmpty {
+                        for tagName in metadata.tags {
+                            let tag = libraryService.findOrCreateTag(name: tagName)
+                            primaryBook.addToTags(tag)
+                        }
+                    }
+
+                    // Fetch cover image if URL is available
+                    if let coverURL = metadata.coverImageURL {
+                        primaryBook.coverImageURL = coverURL
+                        Task {
+                            await fetchCoverImage(from: coverURL)
+                        }
+                    }
+
+                    try? primaryBook.managedObjectContext?.save()
+                    libraryService.refresh()
+                }
+            } else {
+                await MainActor.run {
+                    metadataError = "No metadata found for '\(title)'"
+                }
+            }
+        } catch {
+            await MainActor.run {
+                metadataError = "Failed to fetch metadata: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func fetchCoverImage(from url: URL) async {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            await MainActor.run {
+                primaryBook.coverImageData = data
+                try? primaryBook.managedObjectContext?.save()
+            }
+        } catch {
+            print("Failed to fetch cover image: \(error)")
+        }
     }
 }
 
@@ -1130,6 +2241,7 @@ struct BookGridItemView: View {
             if let metadata = results.first {
                 print("[Metadata] Best match: '\(metadata.title)' by \(metadata.authors.joined(separator: ", "))")
                 print("[Metadata] Cover URL: \(metadata.coverImageURL?.absoluteString ?? "none")")
+                print("[Metadata] Series: \(metadata.series ?? "none"), Tags: \(metadata.tags)")
 
                 await MainActor.run {
                     // Update book with fetched metadata
@@ -1139,6 +2251,36 @@ struct BookGridItemView: View {
                     if let summary = metadata.summary { book.summary = summary }
                     if let pageCount = metadata.pageCount { book.pageCount = Int32(pageCount) }
                     if let language = metadata.language { book.language = language }
+
+                    // Create and link Author entities
+                    if !metadata.authors.isEmpty {
+                        // Clear existing authors first
+                        book.authors = nil
+                        for authorName in metadata.authors {
+                            let author = libraryService.findOrCreateAuthor(name: authorName)
+                            book.addToAuthors(author)
+                        }
+                        print("[Metadata] Added \(metadata.authors.count) author(s)")
+                    }
+
+                    // Create and link Series entity
+                    if let seriesName = metadata.series, !seriesName.isEmpty {
+                        let series = libraryService.findOrCreateSeries(name: seriesName)
+                        book.series = series
+                        if let index = metadata.seriesIndex {
+                            book.seriesIndex = index
+                        }
+                        print("[Metadata] Added series: \(seriesName)")
+                    }
+
+                    // Create and link Tag entities
+                    if !metadata.tags.isEmpty {
+                        for tagName in metadata.tags {
+                            let tag = libraryService.findOrCreateTag(name: tagName)
+                            book.addToTags(tag)
+                        }
+                        print("[Metadata] Added \(metadata.tags.count) tag(s)")
+                    }
 
                     // Fetch cover image if URL is available
                     if let coverURL = metadata.coverImageURL {
@@ -1150,6 +2292,10 @@ struct BookGridItemView: View {
                     }
 
                     try? book.managedObjectContext?.save()
+
+                    // Refresh library service to update sidebar counts
+                    libraryService.refresh()
+
                     print("[Metadata] Saved metadata to book")
                 }
             } else {
@@ -1185,6 +2331,13 @@ struct BookContextMenu: View {
 
     @State private var isConverting = false
     @State private var conversionError: String?
+
+    // Show user feedback via toast notification
+    private func showNotification(title: String, message: String, isError: Bool = false) {
+        Task { @MainActor in
+            ToastNotificationManager.shared.show(title: title, message: message, isError: isError)
+        }
+    }
 
     /// Check if book is synced to a specific Kindle
     private func isOnDevice(_ device: KindleDevice) -> Bool {
@@ -1300,41 +2453,114 @@ struct BookContextMenu: View {
     }
 
     private func convertBook(to format: String) async {
-        guard let fileURL = book.fileURL else { return }
-
         let conversionService = CalibreConversionService.shared
 
         guard conversionService.isCalibreAvailable else {
-            print("Calibre not available")
+            showNotification(
+                title: "Calibre Not Found",
+                message: "Please install Calibre to convert ebooks.",
+                isError: true
+            )
             return
         }
 
+        // Resolve security-scoped access for the book file
+        guard let (accessibleURL, didStartAccessing) = BookFileHelper.resolveSecurityScopedURL(for: book) else {
+            showNotification(
+                title: "Access Denied",
+                message: "Could not access the book file. Try re-importing.",
+                isError: true
+            )
+            return
+        }
+
+        defer {
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
         do {
-            let outputURL = try await conversionService.convert(fileURL, to: format)
-            print("Conversion complete: \(outputURL.lastPathComponent)")
+            let outputURL = try await conversionService.convert(accessibleURL, to: format)
 
             // Add converted book to library
             await MainActor.run {
                 do {
                     try libraryService.addBook(from: outputURL)
+                    showNotification(
+                        title: "Conversion Complete",
+                        message: "\(book.title ?? "Book") converted to \(format.uppercased())"
+                    )
                 } catch {
-                    print("Failed to add converted book: \(error)")
+                    showNotification(
+                        title: "Import Failed",
+                        message: "Converted file could not be added to library.",
+                        isError: true
+                    )
                 }
             }
+        } catch ConversionError.calibreNotFound {
+            showNotification(
+                title: "Calibre Not Found",
+                message: "Please install Calibre to convert ebooks.",
+                isError: true
+            )
+        } catch ConversionError.cancelled {
+            showNotification(
+                title: "Conversion Cancelled",
+                message: "The conversion was cancelled."
+            )
         } catch {
-            print("Conversion failed: \(error)")
+            showNotification(
+                title: "Conversion Failed",
+                message: error.localizedDescription,
+                isError: true
+            )
         }
     }
 
     private func sendToKindle(device: KindleDevice) async {
-        guard let fileURL = book.fileURL,
-              let kindleEmail = device.email else { return }
+        guard let kindleEmail = device.email else {
+            showNotification(
+                title: "No Kindle Email",
+                message: "Please configure an email for \(device.name ?? "this Kindle").",
+                isError: true
+            )
+            return
+        }
 
         let sendService = SendToKindleService.shared
 
+        // Check if SMTP is configured
+        let isConfigured = await sendService.isConfigured
+        guard isConfigured else {
+            showNotification(
+                title: "Email Not Configured",
+                message: "Please configure SMTP email settings in Kindle Settings.",
+                isError: true
+            )
+            return
+        }
+
+        // Resolve security-scoped access for the book file
+        guard let (accessibleURL, didStartAccessing) = BookFileHelper.resolveSecurityScopedURL(for: book) else {
+            showNotification(
+                title: "Access Denied",
+                message: "Could not access the book file. Try re-importing.",
+                isError: true
+            )
+            return
+        }
+
+        defer {
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
         do {
             let result = try await sendService.send(
-                fileURL: fileURL,
+                fileURL: accessibleURL,
                 to: kindleEmail,
                 bookTitle: book.title ?? "Untitled"
             )
@@ -1346,10 +2572,36 @@ struct BookContextMenu: View {
                     device.lastSyncDate = Date()
                     try? viewContext.save()
                 }
-                print("Sent to Kindle: \(result.message)")
+                showNotification(
+                    title: "Sent to Kindle",
+                    message: "\(book.title ?? "Book") sent to \(device.name ?? "Kindle")"
+                )
             }
+        } catch SendToKindleError.fileTooLarge(let size) {
+            let sizeStr = SendToKindleService.formatFileSize(size)
+            showNotification(
+                title: "File Too Large",
+                message: "File is \(sizeStr). Amazon limit is 50 MB.",
+                isError: true
+            )
+        } catch SendToKindleError.invalidKindleEmail(let email) {
+            showNotification(
+                title: "Invalid Kindle Email",
+                message: "\(email) is not a valid Kindle email address.",
+                isError: true
+            )
+        } catch SendToKindleError.smtpConfigMissing {
+            showNotification(
+                title: "Email Not Configured",
+                message: "Please configure SMTP email settings.",
+                isError: true
+            )
         } catch {
-            print("Failed to send to Kindle: \(error)")
+            showNotification(
+                title: "Send Failed",
+                message: error.localizedDescription,
+                isError: true
+            )
         }
     }
 
@@ -1694,6 +2946,29 @@ struct BookDetailView: View {
                     }
                     .padding(.horizontal)
 
+                    // Tags
+                    if let tags = book.tags as? Set<Tag>, !tags.isEmpty {
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Tags")
+                                .font(.headline)
+
+                            FlowLayout(spacing: 8) {
+                                ForEach(Array(tags).sorted(by: { ($0.name ?? "") < ($1.name ?? "") }), id: \.objectID) { tag in
+                                    Text(tag.name ?? "")
+                                        .font(.caption)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(Color.accentColor.opacity(0.15))
+                                        .foregroundColor(.accentColor)
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+
                     // Summary
                     if let summary = book.summary, !summary.isEmpty {
                         Divider()
@@ -1708,6 +2983,39 @@ struct BookDetailView: View {
                         }
                         .padding(.horizontal)
                     }
+
+                    // File Information
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("File Information")
+                            .font(.headline)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let fileURL = book.fileURL {
+                                HStack(alignment: .top) {
+                                    Text("Path:")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .frame(width: 60, alignment: .leading)
+                                    Text(fileURL.path)
+                                        .font(.caption)
+                                        .foregroundColor(.primary)
+                                        .lineLimit(3)
+                                        .textSelection(.enabled)
+                                }
+
+                                Button(action: {
+                                    NSWorkspace.shared.selectFile(fileURL.path, inFileViewerRootedAtPath: "")
+                                }) {
+                                    Label("Show in Finder", systemImage: "folder")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.link)
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
 
                     // Error message
                     if let error = metadataError {
@@ -1864,6 +3172,32 @@ struct BookDetailView: View {
                     if let pageCount = metadata.pageCount { book.pageCount = Int32(pageCount) }
                     if let language = metadata.language { book.language = language }
 
+                    // Create and link Author entities
+                    if !metadata.authors.isEmpty {
+                        book.authors = nil
+                        for authorName in metadata.authors {
+                            let author = libraryService.findOrCreateAuthor(name: authorName)
+                            book.addToAuthors(author)
+                        }
+                    }
+
+                    // Create and link Series entity
+                    if let seriesName = metadata.series, !seriesName.isEmpty {
+                        let series = libraryService.findOrCreateSeries(name: seriesName)
+                        book.series = series
+                        if let index = metadata.seriesIndex {
+                            book.seriesIndex = index
+                        }
+                    }
+
+                    // Create and link Tag entities
+                    if !metadata.tags.isEmpty {
+                        for tagName in metadata.tags {
+                            let tag = libraryService.findOrCreateTag(name: tagName)
+                            book.addToTags(tag)
+                        }
+                    }
+
                     // Fetch cover image if URL is available
                     if let coverURL = metadata.coverImageURL {
                         book.coverImageURL = coverURL
@@ -1873,6 +3207,7 @@ struct BookDetailView: View {
                     }
 
                     try? book.managedObjectContext?.save()
+                    libraryService.refresh()
                 }
             } else {
                 await MainActor.run {
@@ -2059,6 +3394,41 @@ struct KindleSettingsView: View {
     @State private var showingDeleteConfirmation = false
     @State private var deviceToDelete: KindleDevice?
 
+    // SMTP Configuration
+    @State private var selectedProvider: SMTPProvider = .gmail
+    @State private var smtpHost: String = ""
+    @State private var smtpPort: String = "587"
+    @State private var smtpUsername: String = ""
+    @State private var smtpPassword: String = ""
+    @State private var useTLS: Bool = true
+    @State private var isSavingSMTP = false
+    @State private var smtpSaveError: String?
+    @State private var smtpSaveSuccess = false
+    @State private var isConfigured = false
+
+    enum SMTPProvider: String, CaseIterable {
+        case gmail = "Gmail"
+        case outlook = "Outlook / Hotmail"
+        case icloud = "iCloud"
+        case custom = "Custom SMTP"
+
+        var host: String {
+            switch self {
+            case .gmail: return "smtp.gmail.com"
+            case .outlook: return "smtp.office365.com"
+            case .icloud: return "smtp.mail.me.com"
+            case .custom: return ""
+            }
+        }
+
+        var port: Int {
+            switch self {
+            case .gmail, .outlook, .icloud: return 587
+            case .custom: return 587
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -2077,26 +3447,140 @@ struct KindleSettingsView: View {
 
             Divider()
 
-            if kindleDevices.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "flame")
-                        .font(.system(size: 48))
-                        .foregroundColor(.secondary)
-                    Text("No Kindle Devices")
-                        .font(.title2)
-                    Text("Add a Kindle device to start sending books.")
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(kindleDevices, id: \.objectID) { device in
-                        KindleDeviceRow(device: device, viewContext: viewContext) {
-                            deviceToDelete = device
-                            showingDeleteConfirmation = true
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    // SMTP Configuration Section
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: "envelope.fill")
+                                .foregroundColor(.accentColor)
+                            Text("Email Settings (for Send to Kindle)")
+                                .font(.headline)
+
+                            Spacer()
+
+                            if isConfigured {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                    Text("Configured")
+                                        .font(.caption)
+                                        .foregroundColor(.green)
+                                }
+                            }
+                        }
+
+                        Text("Configure your email account to send books to your Kindle. For Gmail, you'll need an App Password.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        // Provider picker
+                        Picker("Email Provider", selection: $selectedProvider) {
+                            ForEach(SMTPProvider.allCases, id: \.self) { provider in
+                                Text(provider.rawValue).tag(provider)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: selectedProvider) { newValue in
+                            if newValue != .custom {
+                                smtpHost = newValue.host
+                                smtpPort = String(newValue.port)
+                            }
+                        }
+
+                        // SMTP fields
+                        if selectedProvider == .custom {
+                            HStack {
+                                TextField("SMTP Host", text: $smtpHost)
+                                    .textFieldStyle(.roundedBorder)
+                                TextField("Port", text: $smtpPort)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 80)
+                            }
+                        }
+
+                        TextField("Email Address", text: $smtpUsername)
+                            .textFieldStyle(.roundedBorder)
+
+                        SecureField("Password / App Password", text: $smtpPassword)
+                            .textFieldStyle(.roundedBorder)
+
+                        if selectedProvider == .gmail {
+                            Link(destination: URL(string: "https://myaccount.google.com/apppasswords")!) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.up.right.square")
+                                    Text("Create Gmail App Password")
+                                }
+                                .font(.caption)
+                            }
+                        }
+
+                        Toggle("Use TLS (recommended)", isOn: $useTLS)
+                            .font(.subheadline)
+
+                        if let error = smtpSaveError {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+
+                        if smtpSaveSuccess {
+                            Text("Email settings saved successfully!")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                        }
+
+                        HStack {
+                            Button("Save Email Settings") {
+                                saveSMTPConfiguration()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(smtpUsername.isEmpty || smtpPassword.isEmpty || isSavingSMTP)
+
+                            if isSavingSMTP {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            }
                         }
                     }
+                    .padding()
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    // Kindle Devices Section
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: "flame.fill")
+                                .foregroundColor(.orange)
+                            Text("Kindle Devices")
+                                .font(.headline)
+                        }
+
+                        if kindleDevices.isEmpty {
+                            VStack(spacing: 8) {
+                                Text("No Kindle devices added yet.")
+                                    .foregroundColor(.secondary)
+                                Text("Add your Kindle's email address to send books.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                        } else {
+                            ForEach(kindleDevices, id: \.objectID) { device in
+                                KindleDeviceRow(device: device, viewContext: viewContext) {
+                                    deviceToDelete = device
+                                    showingDeleteConfirmation = true
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
+                .padding()
             }
 
             Divider()
@@ -2110,7 +3594,10 @@ struct KindleSettingsView: View {
             }
             .padding()
         }
-        .frame(width: 500, height: 400)
+        .frame(width: 550, height: 550)
+        .onAppear {
+            loadExistingSMTPConfiguration()
+        }
         .alert("Delete Device?", isPresented: $showingDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {
@@ -2121,6 +3608,72 @@ struct KindleSettingsView: View {
             }
         } message: {
             Text("This will remove the device from Folio. Books already on the device will not be affected.")
+        }
+    }
+
+    private func loadExistingSMTPConfiguration() {
+        Task {
+            let sendService = SendToKindleService.shared
+            isConfigured = await sendService.isConfigured
+
+            if let config = await sendService.getSMTPConfiguration() {
+                await MainActor.run {
+                    smtpHost = config.host
+                    smtpPort = String(config.port)
+                    smtpUsername = config.username
+                    useTLS = config.useTLS
+
+                    // Determine which provider matches
+                    if config.host == SMTPProvider.gmail.host {
+                        selectedProvider = .gmail
+                    } else if config.host == SMTPProvider.outlook.host {
+                        selectedProvider = .outlook
+                    } else if config.host == SMTPProvider.icloud.host {
+                        selectedProvider = .icloud
+                    } else {
+                        selectedProvider = .custom
+                    }
+                }
+            }
+        }
+    }
+
+    private func saveSMTPConfiguration() {
+        smtpSaveError = nil
+        smtpSaveSuccess = false
+        isSavingSMTP = true
+
+        let host = selectedProvider == .custom ? smtpHost : selectedProvider.host
+        let port = Int(smtpPort) ?? 587
+
+        Task {
+            do {
+                let config = SendToKindleService.SMTPConfiguration(
+                    host: host,
+                    port: port,
+                    username: smtpUsername,
+                    useTLS: useTLS
+                )
+
+                try await SendToKindleService.shared.configure(smtp: config, password: smtpPassword)
+
+                await MainActor.run {
+                    isSavingSMTP = false
+                    smtpSaveSuccess = true
+                    isConfigured = true
+
+                    // Clear success message after delay
+                    Task {
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        smtpSaveSuccess = false
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isSavingSMTP = false
+                    smtpSaveError = "Failed to save: \(error.localizedDescription)"
+                }
+            }
         }
     }
 }
@@ -2395,6 +3948,53 @@ struct SendToKindleView: View {
         }
 
         isSending = false
+    }
+}
+
+// MARK: - Flow Layout
+
+/// A layout that arranges views in a flowing horizontal wrap
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = computeLayout(proposal: proposal, subviews: subviews)
+        return result.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = computeLayout(proposal: proposal, subviews: subviews)
+
+        for (index, position) in result.positions.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + position.x, y: bounds.minY + position.y), proposal: .unspecified)
+        }
+    }
+
+    private func computeLayout(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, positions: [CGPoint]) {
+        var positions: [CGPoint] = []
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var maxWidth: CGFloat = 0
+
+        let containerWidth = proposal.width ?? .infinity
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+
+            if currentX + size.width > containerWidth && currentX > 0 {
+                currentX = 0
+                currentY += lineHeight + spacing
+                lineHeight = 0
+            }
+
+            positions.append(CGPoint(x: currentX, y: currentY))
+            currentX += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+            maxWidth = max(maxWidth, currentX)
+        }
+
+        return (CGSize(width: maxWidth, height: currentY + lineHeight), positions)
     }
 }
 

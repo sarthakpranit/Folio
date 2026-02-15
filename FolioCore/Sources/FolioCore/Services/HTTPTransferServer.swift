@@ -18,6 +18,12 @@ public protocol HTTPTransferBookProvider: AnyObject {
 
     /// Get the format for a book by its ID
     func getBookFormat(id: String) -> EbookFormat?
+
+    /// Get the security-scoped bookmark data for a book (for external volume access)
+    func getBookmarkData(id: String) -> Data?
+
+    /// Get book metadata (title, authors) for conversion
+    func getBookMetadata(id: String) -> (title: String, authors: [String])?
 }
 
 // MARK: - HTTP Transfer Server
@@ -48,6 +54,16 @@ public final class HTTPTransferServer: ObservableObject {
 
     /// Port range to try when starting the server
     private let portRange: ClosedRange<UInt16> = 8080...8180
+
+    /// Cache directory for converted files
+    private lazy var conversionCacheURL: URL = {
+        let cacheDir = FileManager.default.temporaryDirectory.appendingPathComponent("FolioKindleCache")
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        return cacheDir
+    }()
+
+    /// Conversion service for Kindle format conversion
+    private let conversionService = CalibreConversionService.shared
 
     // MARK: - Initialization
 
@@ -163,6 +179,15 @@ public final class HTTPTransferServer: ObservableObject {
             let bookId = request.params[":id"] ?? ""
             return self.handleCoverRequest(bookId: bookId)
         }
+
+        // Kindle-compatible download (converts to MOBI if needed)
+        server["/api/books/:id/kindle"] = { [weak self] request in
+            guard let self = self else {
+                return .internalServerError
+            }
+            let bookId = request.params[":id"] ?? ""
+            return self.handleKindleDownloadRequest(bookId: bookId)
+        }
     }
 
     /// Handle request for HTML book list page
@@ -200,11 +225,6 @@ public final class HTTPTransferServer: ObservableObject {
             return .notFound
         }
 
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            logger.error("Book file does not exist: \(fileURL.path)")
-            return .notFound
-        }
-
         // Get format for MIME type
         let format = provider.getBookFormat(id: bookId)
         let mimeType = format?.mimeType ?? "application/octet-stream"
@@ -217,8 +237,54 @@ public final class HTTPTransferServer: ObservableObject {
 
         logger.info("Starting download: \(filename)")
 
+        // Try to resolve security-scoped access for external volumes
+        var accessibleURL = fileURL
+        var didStartAccessing = false
+
+        if let bookmarkData = provider.getBookmarkData(id: bookId) {
+            var isStale = false
+            do {
+                let resolvedURL = try URL(
+                    resolvingBookmarkData: bookmarkData,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+
+                if resolvedURL.startAccessingSecurityScopedResource() {
+                    accessibleURL = resolvedURL
+                    didStartAccessing = true
+                    logger.debug("Using security-scoped access for: \(filename)")
+                }
+            } catch {
+                logger.warning("Failed to resolve bookmark, trying direct access: \(error.localizedDescription)")
+            }
+        }
+
+        // Fallback: try direct access
+        if !didStartAccessing {
+            if fileURL.startAccessingSecurityScopedResource() {
+                didStartAccessing = true
+            }
+        }
+
+        // Verify file exists with our access
+        guard FileManager.default.fileExists(atPath: accessibleURL.path) else {
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
+            logger.error("Book file does not exist: \(accessibleURL.path)")
+            Task { @MainActor in self.activeDownloads -= 1 }
+            return .notFound
+        }
+
         do {
-            let fileData = try Data(contentsOf: fileURL)
+            let fileData = try Data(contentsOf: accessibleURL)
+
+            // Stop security-scoped access
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
 
             // Decrement active downloads when done
             Task { @MainActor in
@@ -236,6 +302,10 @@ public final class HTTPTransferServer: ObservableObject {
                 try writer.write(fileData)
             }
         } catch {
+            // Stop security-scoped access on error
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
             Task { @MainActor in
                 self.activeDownloads -= 1
             }
@@ -251,12 +321,253 @@ public final class HTTPTransferServer: ObservableObject {
         return .notFound
     }
 
+    /// Handle Kindle-compatible download request
+    /// Converts non-MOBI formats to MOBI on-the-fly for Kindle browser compatibility
+    private func handleKindleDownloadRequest(bookId: String) -> HttpResponse {
+        guard let provider = bookProvider else {
+            logger.error("No book provider configured")
+            return .internalServerError
+        }
+
+        guard let fileURL = provider.getBookFileURL(id: bookId) else {
+            logger.warning("Book not found: \(bookId)")
+            return .notFound
+        }
+
+        let format = provider.getBookFormat(id: bookId)
+        let originalFilename = fileURL.lastPathComponent
+
+        // If already MOBI/AZW3/PRC, serve directly
+        if let fmt = format, fmt.kindleNativeFormat {
+            logger.info("Book already Kindle-compatible, serving directly: \(originalFilename)")
+            return handleDownloadRequest(bookId: bookId)
+        }
+
+        // Check if Calibre is available for conversion
+        guard conversionService.isCalibreAvailable else {
+            logger.error("Calibre not available for Kindle conversion")
+            return .raw(503, "Service Unavailable", [
+                "Content-Type": "text/html; charset=utf-8"
+            ]) { writer in
+                let html = """
+                <!DOCTYPE html>
+                <html><head><title>Conversion Unavailable</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>body{font-family:sans-serif;padding:2rem;text-align:center;background:#1a1a2e;color:#fff;}
+                h1{color:#ff6b6b;}p{color:#ccc;}</style></head>
+                <body><h1>Conversion Unavailable</h1>
+                <p>Calibre is required to convert this book to Kindle format.</p>
+                <p>Please install Calibre on the server or use Send to Kindle instead.</p>
+                </body></html>
+                """
+                try writer.write(Data(html.utf8))
+            }
+        }
+
+        // Check cache first
+        let cacheFilename = "\(bookId).mobi"
+        let cachedURL = conversionCacheURL.appendingPathComponent(cacheFilename)
+
+        if FileManager.default.fileExists(atPath: cachedURL.path) {
+            logger.info("Serving cached Kindle conversion: \(cacheFilename)")
+            return serveFile(at: cachedURL, originalTitle: fileURL.deletingPathExtension().lastPathComponent)
+        }
+
+        // Need to convert - resolve security-scoped access first
+        var accessibleURL = fileURL
+        var didStartAccessing = false
+
+        if let bookmarkData = provider.getBookmarkData(id: bookId) {
+            var isStale = false
+            do {
+                let resolvedURL = try URL(
+                    resolvingBookmarkData: bookmarkData,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+
+                if resolvedURL.startAccessingSecurityScopedResource() {
+                    accessibleURL = resolvedURL
+                    didStartAccessing = true
+                }
+            } catch {
+                logger.warning("Failed to resolve bookmark for conversion: \(error.localizedDescription)")
+            }
+        }
+
+        if !didStartAccessing {
+            if fileURL.startAccessingSecurityScopedResource() {
+                didStartAccessing = true
+            }
+        }
+
+        guard FileManager.default.fileExists(atPath: accessibleURL.path) else {
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
+            logger.error("Source file not accessible for conversion")
+            return .notFound
+        }
+
+        // Perform synchronous conversion (blocking - not ideal but works for HTTP)
+        logger.info("Converting to MOBI for Kindle: \(originalFilename)")
+
+        // Get book metadata for embedding in converted file
+        let metadata = provider.getBookMetadata(id: bookId)
+        let bookTitle = metadata?.title ?? fileURL.deletingPathExtension().lastPathComponent
+        let bookAuthors = metadata?.authors.joined(separator: " & ") ?? ""
+
+        Task { @MainActor in
+            self.activeDownloads += 1
+        }
+
+        // Create a semaphore to wait for async conversion
+        let semaphore = DispatchSemaphore(value: 0)
+        var conversionResult: URL?
+        var conversionError: Error?
+
+        Task {
+            do {
+                let baseOptions = ConversionOptions.kindle()
+
+                // Build metadata arguments for Calibre
+                var metadataArgs: [String] = []
+                metadataArgs.append(contentsOf: ["--title", bookTitle])
+                if !bookAuthors.isEmpty {
+                    metadataArgs.append(contentsOf: ["--authors", bookAuthors])
+                }
+
+                let outputURL = try await conversionService.convert(
+                    accessibleURL,
+                    to: "mobi",
+                    options: ConversionOptions(
+                        profile: baseOptions.profile,
+                        preserveEmbeddedMetadata: baseOptions.preserveEmbeddedMetadata,
+                        quality: baseOptions.quality,
+                        outputDirectory: conversionCacheURL,
+                        additionalArguments: metadataArgs
+                    )
+                )
+
+                // Rename to use bookId for caching
+                let finalURL = conversionCacheURL.appendingPathComponent(cacheFilename)
+                if outputURL != finalURL {
+                    try? FileManager.default.removeItem(at: finalURL)
+                    try FileManager.default.moveItem(at: outputURL, to: finalURL)
+                }
+                conversionResult = finalURL
+            } catch {
+                conversionError = error
+            }
+
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
+
+            semaphore.signal()
+        }
+
+        // Wait for conversion with timeout (5 minutes)
+        let timeout = DispatchTime.now() + .seconds(300)
+        if semaphore.wait(timeout: timeout) == .timedOut {
+            Task { @MainActor in self.activeDownloads -= 1 }
+            logger.error("Kindle conversion timed out")
+            return .raw(504, "Gateway Timeout", [
+                "Content-Type": "text/html; charset=utf-8"
+            ]) { writer in
+                let html = """
+                <!DOCTYPE html>
+                <html><head><title>Conversion Timeout</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>body{font-family:sans-serif;padding:2rem;text-align:center;background:#1a1a2e;color:#fff;}
+                h1{color:#ff6b6b;}</style></head>
+                <body><h1>Conversion Timeout</h1>
+                <p>The book conversion took too long. Try a smaller file.</p>
+                </body></html>
+                """
+                try writer.write(Data(html.utf8))
+            }
+        }
+
+        Task { @MainActor in self.activeDownloads -= 1 }
+
+        if let error = conversionError {
+            logger.error("Kindle conversion failed: \(error.localizedDescription)")
+            return .raw(500, "Conversion Failed", [
+                "Content-Type": "text/html; charset=utf-8"
+            ]) { writer in
+                let html = """
+                <!DOCTYPE html>
+                <html><head><title>Conversion Failed</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>body{font-family:sans-serif;padding:2rem;text-align:center;background:#1a1a2e;color:#fff;}
+                h1{color:#ff6b6b;}p{color:#ccc;}</style></head>
+                <body><h1>Conversion Failed</h1>
+                <p>Could not convert book to Kindle format.</p>
+                <p style="font-size:0.8rem;">\(self.escapeHTML(error.localizedDescription))</p>
+                </body></html>
+                """
+                try writer.write(Data(html.utf8))
+            }
+        }
+
+        guard let resultURL = conversionResult else {
+            return .internalServerError
+        }
+
+        logger.info("Kindle conversion complete, serving: \(resultURL.lastPathComponent)")
+        return serveFile(at: resultURL, originalTitle: fileURL.deletingPathExtension().lastPathComponent)
+    }
+
+    /// Helper to serve a file with proper headers
+    private func serveFile(at url: URL, originalTitle: String) -> HttpResponse {
+        do {
+            let fileData = try Data(contentsOf: url)
+            let filename = "\(originalTitle).mobi"
+
+            return .raw(200, "OK", [
+                "Content-Type": "application/x-mobipocket-ebook",
+                "Content-Disposition": "attachment; filename=\"\(filename)\"",
+                "Content-Length": "\(fileData.count)"
+            ]) { writer in
+                try writer.write(fileData)
+            }
+        } catch {
+            logger.error("Failed to read converted file: \(error)")
+            return .internalServerError
+        }
+    }
+
     /// Generate mobile-friendly HTML page
     private func generateHTMLPage(books: [BookDTO]) -> String {
+        let calibreAvailable = conversionService.isCalibreAvailable
+
         let bookRows = books.map { book -> String in
             let authors = book.authors.joined(separator: ", ")
             let sizeFormatted = formatFileSize(book.fileSize)
             let formatUpper = book.format.uppercased()
+            let format = EbookFormat(fileExtension: book.format)
+            let isKindleNative = format?.kindleNativeFormat ?? false
+
+            // Show Kindle download button for non-native formats when Calibre is available
+            let kindleButton: String
+            if isKindleNative {
+                // Already Kindle-compatible - regular download works
+                kindleButton = ""
+            } else if calibreAvailable {
+                // Offer conversion to MOBI
+                kindleButton = """
+                    <a href="/api/books/\(book.id)/kindle" class="kindle-btn" download>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                        </svg>
+                        Kindle
+                    </a>
+                """
+            } else {
+                kindleButton = ""
+            }
 
             return """
             <div class="book-card">
@@ -268,14 +579,17 @@ public final class HTTPTransferServer: ObservableObject {
                         <span class="file-size">\(sizeFormatted)</span>
                     </div>
                 </div>
-                <a href="/api/books/\(book.id)/download" class="download-btn" download>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/>
-                        <line x1="12" y1="15" x2="12" y2="3"/>
-                    </svg>
-                    Download
-                </a>
+                <div class="button-group">
+                    \(kindleButton)
+                    <a href="/api/books/\(book.id)/download" class="download-btn" download>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        Download
+                    </a>
+                </div>
             </div>
             """
         }.joined(separator: "\n")
@@ -409,6 +723,13 @@ public final class HTTPTransferServer: ObservableObject {
                     color: rgba(255, 255, 255, 0.5);
                 }
 
+                .button-group {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 0.5rem;
+                    flex-shrink: 0;
+                }
+
                 .download-btn {
                     display: flex;
                     align-items: center;
@@ -426,6 +747,26 @@ public final class HTTPTransferServer: ObservableObject {
                 }
 
                 .download-btn:active {
+                    opacity: 0.8;
+                }
+
+                .kindle-btn {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 0.4rem;
+                    background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+                    color: white;
+                    padding: 0.5rem 0.75rem;
+                    border-radius: 6px;
+                    text-decoration: none;
+                    font-weight: 500;
+                    font-size: 0.75rem;
+                    white-space: nowrap;
+                    transition: opacity 0.2s;
+                }
+
+                .kindle-btn:active {
                     opacity: 0.8;
                 }
 

@@ -94,6 +94,8 @@ class LibraryService: ObservableObject {
         loadAuthors()
         loadSeries()
         loadTags()
+        objectWillChange.send()
+        print("[LibraryService] Refreshed - Authors: \(authors.count), Series: \(series.count), Tags: \(tags.count)")
     }
 
     // MARK: - Add Book
@@ -619,5 +621,22 @@ extension LibraryService: HTTPTransferBookProvider {
               let book = books.first(where: { $0.id == uuid }),
               let formatString = book.format else { return nil }
         return EbookFormat(fileExtension: formatString)
+    }
+
+    /// Get security-scoped bookmark data for a book (for external volume access)
+    func getBookmarkData(id: String) -> Data? {
+        guard let uuid = UUID(uuidString: id),
+              let book = books.first(where: { $0.id == uuid }) else { return nil }
+        return book.bookmarkData
+    }
+
+    /// Get book metadata (title, authors) for conversion
+    func getBookMetadata(id: String) -> (title: String, authors: [String])? {
+        guard let uuid = UUID(uuidString: id),
+              let book = books.first(where: { $0.id == uuid }) else { return nil }
+
+        let title = book.title ?? "Unknown"
+        let authors = (book.authors as? Set<Author>)?.compactMap { $0.name } ?? []
+        return (title: title, authors: authors)
     }
 }

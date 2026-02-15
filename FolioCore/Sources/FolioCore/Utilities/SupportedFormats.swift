@@ -78,6 +78,17 @@ public enum EbookFormat: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Native Kindle format that can be downloaded via Kindle browser
+    /// The Kindle experimental browser only accepts: .azw, .prc, .mobi, .txt
+    public var kindleNativeFormat: Bool {
+        switch self {
+        case .mobi, .azw3, .txt:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Supported by Kobo devices
     public var koboCompatible: Bool {
         switch self {
