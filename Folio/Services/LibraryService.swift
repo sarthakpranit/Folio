@@ -361,6 +361,7 @@ class LibraryService: ObservableObject {
 
     /// Clean up book titles by extracting embedded author names
     /// This fixes books where the title contains "Title - Author" format
+    /// and also removes author names that appear at the end of titles without separators
     func cleanupBookTitles(books booksToClean: [Book]? = nil) -> CleanupResult {
         let targetBooks = booksToClean ?? self.books
         var titlesFixed = 0
@@ -369,13 +370,45 @@ class LibraryService: ObservableObject {
         for book in targetBooks {
             guard let currentTitle = book.title else { continue }
 
-            // Check if this book might have an embedded author in the title
-            let parsed = parseFilename(currentTitle + ".epub") // Add fake extension for parsing
+            // Step 0: Normalize whitespace first (collapse multiple spaces)
+            var newTitle = normalizeWhitespace(currentTitle)
+            var didFix = newTitle != currentTitle // Track if normalization alone changed it
+
+            // Step 1: If book already has authors, remove their names from the title
+            // This handles cases like "2312 Kim Stanley Robinson" -> "2312" when author is "Kim Stanley Robinson"
+            if let existingAuthors = book.authors as? Set<Author>, !existingAuthors.isEmpty {
+                for author in existingAuthors {
+                    guard let authorName = author.name, !authorName.isEmpty else { continue }
+
+                    // Normalize for comparison
+                    let normalizedTitle = normalizeWhitespace(newTitle).lowercased()
+                    let normalizedAuthor = normalizeWhitespace(authorName).lowercased()
+
+                    // Check if author name appears at the end of the title
+                    if normalizedTitle.hasSuffix(normalizedAuthor) {
+                        // Find where the author name starts and remove it
+                        let titleWithoutAuthor = String(newTitle.dropLast(authorName.count))
+                        newTitle = normalizeWhitespace(titleWithoutAuthor)
+                        didFix = true
+                        print("Removed author '\(authorName)' from end of title")
+                    }
+                    // Also check if author name appears at the start
+                    else if normalizedTitle.hasPrefix(normalizedAuthor) {
+                        let titleWithoutAuthor = String(newTitle.dropFirst(authorName.count))
+                        newTitle = normalizeWhitespace(titleWithoutAuthor)
+                        didFix = true
+                        print("Removed author '\(authorName)' from start of title")
+                    }
+                }
+            }
+
+            // Step 2: Try parsing for separator-based patterns (Title - Author, etc.)
+            let parsed = parseFilename(newTitle + ".epub") // Add fake extension for parsing
 
             // Only update if we found an author AND the title changed significantly
             if let extractedAuthor = parsed.author,
                !extractedAuthor.isEmpty,
-               parsed.title != currentTitle {
+               parsed.title != newTitle {
 
                 // Check if book already has this author
                 let existingAuthors = (book.authors as? Set<Author>) ?? []
@@ -383,12 +416,8 @@ class LibraryService: ObservableObject {
                     author.name?.lowercased() == extractedAuthor.lowercased()
                 }
 
-                // Update title
-                let oldTitle = book.title
-                book.title = parsed.title
-                book.sortTitle = generateSortTitle(parsed.title)
-                titlesFixed += 1
-                print("Fixed title: '\(oldTitle ?? "")' -> '\(parsed.title)'")
+                newTitle = normalizeWhitespace(parsed.title)
+                didFix = true
 
                 // Add author if not already present
                 if !hasAuthor {
@@ -397,6 +426,18 @@ class LibraryService: ObservableObject {
                     authorsExtracted += 1
                     print("Extracted author: '\(extractedAuthor)'")
                 }
+            }
+
+            // Step 3: Final normalization and apply changes
+            newTitle = normalizeWhitespace(newTitle)
+
+            // Apply the fix if any changes were made
+            if didFix && newTitle != currentTitle {
+                let oldTitle = book.title
+                book.title = newTitle
+                book.sortTitle = generateSortTitle(newTitle)
+                titlesFixed += 1
+                print("Fixed title: '\(oldTitle ?? "")' -> '\(newTitle)'")
             }
         }
 
@@ -729,6 +770,14 @@ class LibraryService: ObservableObject {
         return ParsedFilename(title: cleanedTitle, author: nil)
     }
 
+    /// Normalize whitespace in a string (collapse multiple spaces to single, trim edges)
+    private func normalizeWhitespace(_ text: String) -> String {
+        return text
+            .components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     /// Check if a string looks like an author name (e.g., "J.R.R. Tolkien", "George R.R. Martin")
     private func looksLikeAuthorName(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -738,7 +787,8 @@ class LibraryService: ObservableObject {
         guard words.count >= 1 && words.count <= 6 else { return false }
 
         // Check if words look like name parts (capitalized, possibly with periods for initials)
-        let namePattern = #"^[A-Z][a-zA-Z]*\.?$"#
+        // Uses Unicode property escapes to support accented characters (José, García, etc.)
+        let namePattern = #"^\p{Lu}[\p{L}]*\.?$"#
         let regex = try? NSRegularExpression(pattern: namePattern)
 
         var nameWordCount = 0
@@ -758,7 +808,8 @@ class LibraryService: ObservableObject {
         return parseFilename(filename).title
     }
 
-    private func generateSortTitle(_ title: String) -> String {
+    /// Generate a sort-friendly title by removing leading articles
+    func generateSortTitle(_ title: String) -> String {
         let articles = ["the ", "a ", "an "]
         var result = title.lowercased()
 

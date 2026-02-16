@@ -1644,6 +1644,17 @@ struct BookGroupGridItemView: View {
             if let metadata = results.first {
                 await MainActor.run {
                     // Update primary book with fetched metadata
+                    // Use the metadata title (from library databases) instead of filename-parsed title
+                    if !metadata.title.isEmpty && metadata.confidence >= 0.5 {
+                        primaryBook.title = metadata.title
+                        primaryBook.sortTitle = libraryService.generateSortTitle(metadata.title)
+                        // Update all books in the group with the correct title
+                        for book in group.books {
+                            book.title = metadata.title
+                            book.sortTitle = libraryService.generateSortTitle(metadata.title)
+                        }
+                    }
+
                     if let isbn = metadata.isbn { primaryBook.isbn = isbn }
                     if let isbn13 = metadata.isbn13 { primaryBook.isbn13 = isbn13 }
                     if let publisher = metadata.publisher { primaryBook.publisher = publisher }
@@ -1949,6 +1960,14 @@ struct BookGroupContextMenu: View {
             let results = try await metadataService.fetchMetadata(title: title, author: authorName)
             if let metadata = results.first {
                 await MainActor.run {
+                    // Use the metadata title (from library databases) instead of filename-parsed title
+                    if !metadata.title.isEmpty && metadata.confidence >= 0.5 {
+                        for book in group.books {
+                            book.title = metadata.title
+                            book.sortTitle = libraryService.generateSortTitle(metadata.title)
+                        }
+                    }
+
                     // Update all books in group with ISBNs for better grouping
                     for book in group.books {
                         if let isbn = metadata.isbn { book.isbn = isbn }
@@ -1960,6 +1979,15 @@ struct BookGroupContextMenu: View {
                     if let summary = metadata.summary { primaryBook.summary = summary }
                     if let pageCount = metadata.pageCount { primaryBook.pageCount = Int32(pageCount) }
                     if let language = metadata.language { primaryBook.language = language }
+
+                    // Create and link Author entities from metadata
+                    if !metadata.authors.isEmpty {
+                        primaryBook.authors = nil
+                        for authorName in metadata.authors {
+                            let author = libraryService.findOrCreateAuthor(name: authorName)
+                            primaryBook.addToAuthors(author)
+                        }
+                    }
 
                     if let coverURL = metadata.coverImageURL {
                         primaryBook.coverImageURL = coverURL
@@ -2353,6 +2381,14 @@ struct BookGroupDetailView: View {
 
             if let metadata = results.first {
                 await MainActor.run {
+                    // Use the metadata title (from library databases) instead of filename-parsed title
+                    if !metadata.title.isEmpty && metadata.confidence >= 0.5 {
+                        for book in group.books {
+                            book.title = metadata.title
+                            book.sortTitle = libraryService.generateSortTitle(metadata.title)
+                        }
+                    }
+
                     // Update all books in group with ISBNs
                     for book in group.books {
                         if let isbn = metadata.isbn { book.isbn = isbn }
@@ -2638,6 +2674,13 @@ struct BookGridItemView: View {
                 print("[Metadata] Series: \(metadata.series ?? "none"), Tags: \(metadata.tags)")
 
                 await MainActor.run {
+                    // Use the metadata title (from library databases) instead of filename-parsed title
+                    if !metadata.title.isEmpty && metadata.confidence >= 0.5 {
+                        book.title = metadata.title
+                        book.sortTitle = libraryService.generateSortTitle(metadata.title)
+                        print("[Metadata] Updated title to: '\(metadata.title)'")
+                    }
+
                     // Update book with fetched metadata
                     if let isbn = metadata.isbn { book.isbn = isbn }
                     if let isbn13 = metadata.isbn13 { book.isbn13 = isbn13 }
@@ -3020,12 +3063,27 @@ struct BookContextMenu: View {
             let results = try await metadataService.fetchMetadata(title: title, author: authorName)
             if let metadata = results.first {
                 await MainActor.run {
+                    // Use the metadata title (from library databases) instead of filename-parsed title
+                    if !metadata.title.isEmpty && metadata.confidence >= 0.5 {
+                        book.title = metadata.title
+                        book.sortTitle = libraryService.generateSortTitle(metadata.title)
+                    }
+
                     if let isbn = metadata.isbn { book.isbn = isbn }
                     if let isbn13 = metadata.isbn13 { book.isbn13 = isbn13 }
                     if let publisher = metadata.publisher { book.publisher = publisher }
                     if let summary = metadata.summary { book.summary = summary }
                     if let pageCount = metadata.pageCount { book.pageCount = Int32(pageCount) }
                     if let language = metadata.language { book.language = language }
+
+                    // Create and link Author entities
+                    if !metadata.authors.isEmpty {
+                        book.authors = nil
+                        for authorName in metadata.authors {
+                            let author = libraryService.findOrCreateAuthor(name: authorName)
+                            book.addToAuthors(author)
+                        }
+                    }
 
                     if let coverURL = metadata.coverImageURL {
                         book.coverImageURL = coverURL
@@ -3040,6 +3098,7 @@ struct BookContextMenu: View {
                     }
 
                     try? book.managedObjectContext?.save()
+                    libraryService.refresh()
                 }
             }
         } catch {
@@ -3558,6 +3617,12 @@ struct BookDetailView: View {
 
             if let metadata = results.first {
                 await MainActor.run {
+                    // Use the metadata title (from library databases) instead of filename-parsed title
+                    if !metadata.title.isEmpty && metadata.confidence >= 0.5 {
+                        book.title = metadata.title
+                        book.sortTitle = libraryService.generateSortTitle(metadata.title)
+                    }
+
                     // Update book with fetched metadata
                     if let isbn = metadata.isbn { book.isbn = isbn }
                     if let isbn13 = metadata.isbn13 { book.isbn13 = isbn13 }
