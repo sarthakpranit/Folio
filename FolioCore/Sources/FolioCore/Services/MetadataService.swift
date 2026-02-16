@@ -122,8 +122,12 @@ public struct MetadataSearchOptions: Sendable {
 
 /// Service that aggregates multiple metadata providers with fallback strategy
 ///
-/// The service tries providers in order of priority (Open Library first, then Google Books).
+/// The service tries providers in order:
+/// 1. **Open Library** (primary) - No API key required, 1 req/sec rate limit
+/// 2. **Google Books** (fallback) - Built-in retry logic and exponential backoff
+///
 /// Open Library is preferred as it has no API key requirement and more lenient rate limits.
+/// If Open Library fails or returns no results, Google Books is tried as a fallback.
 /// For ISBN lookups, it can merge results from multiple providers for better coverage.
 /// For title searches, it returns results from the first provider that succeeds.
 public final class MetadataService: @unchecked Sendable {
@@ -138,11 +142,11 @@ public final class MetadataService: @unchecked Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize with default providers (Open Library only - no API key, lenient rate limits)
+    /// Initialize with default providers (Open Library first, Google Books as fallback)
     public init() {
         self.providers = [
-            OpenLibraryAPI()     // Primary and only: No API key required, 1 req/sec rate limit
-            // Google Books removed due to aggressive rate limiting without API key
+            OpenLibraryAPI(),    // Primary: No API key required, 1 req/sec rate limit
+            GoogleBooksAPI()     // Fallback: Has built-in retry logic and rate limiting
         ]
     }
 
