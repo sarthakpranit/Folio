@@ -10,7 +10,7 @@ import CloudKit
 import Combine
 
 class PersistenceController: ObservableObject {
-    static let shared = PersistenceController()
+    @MainActor static let shared = PersistenceController()
 
     /// Preview instance for SwiftUI previews
     @MainActor

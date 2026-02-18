@@ -91,7 +91,13 @@ public actor SendToKindleService {
 
     public init(keychainService: KeychainService = .shared) {
         self.keychainService = keychainService
-        self.smtpConfiguration = loadSMTPConfiguration()
+        // Load config directly here to avoid actor isolation issue
+        if let data = UserDefaults.standard.data(forKey: smtpConfigKey),
+           let config = try? JSONDecoder().decode(SMTPConfiguration.self, from: data) {
+            self.smtpConfiguration = config
+        } else {
+            self.smtpConfiguration = nil
+        }
     }
 
     // MARK: - Public Methods

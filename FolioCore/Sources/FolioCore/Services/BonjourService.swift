@@ -309,14 +309,14 @@ public final class BonjourService: ObservableObject {
 
         for result in results {
             // Extract endpoint info
-            if case .service(let name, let type, let domain, let interface) = result.endpoint {
+            if case .service(let name, let type, let domain, _) = result.endpoint {
                 // Skip our own service
                 if name == serviceName { continue }
 
                 // Create server entry
                 // Note: We need to resolve to get the actual host/port
                 let server = DiscoveredServer(
-                    id: "\(name).\(type).\(domain ?? "local")",
+                    id: "\(name).\(type).\(domain.isEmpty ? "local" : domain)",
                     name: name,
                     host: "", // Will be resolved when selected
                     port: 0,
@@ -377,10 +377,11 @@ public final class BonjourService: ObservableObject {
             interface: nil
         )
 
+        let queue = self.queue  // Capture queue before closure
         return try await withCheckedThrowingContinuation { continuation in
             let connection = NWConnection(to: endpoint, using: .tcp)
 
-            connection.stateUpdateHandler = { [weak self] state in
+            connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
                     // Get the resolved endpoint
@@ -423,7 +424,7 @@ public final class BonjourService: ObservableObject {
                 }
             }
 
-            connection.start(queue: self.queue)
+            connection.start(queue: queue)
 
             // Timeout after 5 seconds
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {

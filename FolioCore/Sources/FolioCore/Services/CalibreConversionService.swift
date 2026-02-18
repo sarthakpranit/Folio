@@ -101,16 +101,16 @@ public final class ConversionJob: @unchecked Sendable {
     }
 
     internal func cancel() {
-        lock.lock()
-        defer { lock.unlock() }
-        isCancelled = true
-        process?.terminate()
+        lock.withLock {
+            isCancelled = true
+            process?.terminate()
+        }
     }
 
     internal var wasCancelled: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return isCancelled
+        lock.withLock {
+            isCancelled
+        }
     }
 }
 
@@ -226,14 +226,14 @@ public final class CalibreConversionService: @unchecked Sendable {
         let job = ConversionJob(id: jobId, inputURL: inputURL, outputFormat: normalizedOutputFormat, options: options)
 
         // Register job
-        jobsLock.lock()
-        activeJobs[jobId] = job
-        jobsLock.unlock()
+        jobsLock.withLock {
+            activeJobs[jobId] = job
+        }
 
         defer {
-            jobsLock.lock()
-            activeJobs.removeValue(forKey: jobId)
-            jobsLock.unlock()
+            jobsLock.withLock {
+                _ = activeJobs.removeValue(forKey: jobId)
+            }
         }
 
         // Determine output path
@@ -444,6 +444,20 @@ public final class CalibreConversionService: @unchecked Sendable {
         return args
     }
 
+    /// Thread-safe string buffer for concurrent access
+    private final class OutputBuffer: @unchecked Sendable {
+        private var buffer = ""
+        private let lock = NSLock()
+
+        func append(_ string: String) {
+            lock.withLock { buffer += string }
+        }
+
+        var value: String {
+            lock.withLock { buffer }
+        }
+    }
+
     /// Run a process and capture output with progress tracking
     private func runProcess(
         executablePath: String,
@@ -464,8 +478,9 @@ public final class CalibreConversionService: @unchecked Sendable {
             // Store process reference for cancellation
             job.process = process
 
-            var stdoutBuffer = ""
-            var stderrBuffer = ""
+            // Use thread-safe buffers
+            let stdoutBuffer = OutputBuffer()
+            let stderrBuffer = OutputBuffer()
 
             // Handle stdout for progress parsing
             stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -473,7 +488,7 @@ public final class CalibreConversionService: @unchecked Sendable {
                 guard !data.isEmpty else { return }
 
                 if let output = String(data: data, encoding: .utf8) {
-                    stdoutBuffer += output
+                    stdoutBuffer.append(output)
                     self?.parseProgress(from: output, job: job)
                 }
             }
@@ -484,7 +499,7 @@ public final class CalibreConversionService: @unchecked Sendable {
                 guard !data.isEmpty else { return }
 
                 if let output = String(data: data, encoding: .utf8) {
-                    stderrBuffer += output
+                    stderrBuffer.append(output)
                 }
             }
 
@@ -498,16 +513,16 @@ public final class CalibreConversionService: @unchecked Sendable {
                 let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
 
                 if let output = String(data: remainingStdout, encoding: .utf8) {
-                    stdoutBuffer += output
+                    stdoutBuffer.append(output)
                 }
                 if let output = String(data: remainingStderr, encoding: .utf8) {
-                    stderrBuffer += output
+                    stderrBuffer.append(output)
                 }
 
                 continuation.resume(returning: (
                     exitCode: process.terminationStatus,
-                    stdout: stdoutBuffer,
-                    stderr: stderrBuffer
+                    stdout: stdoutBuffer.value,
+                    stderr: stderrBuffer.value
                 ))
             }
 

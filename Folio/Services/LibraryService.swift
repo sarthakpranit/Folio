@@ -36,8 +36,8 @@ class LibraryService: ObservableObject {
     /// Supported import formats
     let supportedExtensions = ["epub", "mobi", "azw3", "pdf", "cbz", "cbr", "fb2", "txt", "rtf"]
 
-    private init(persistenceController: PersistenceController = .shared) {
-        self.persistenceController = persistenceController
+    private init() {
+        self.persistenceController = PersistenceController.shared
         loadBooks()
         loadAuthors()
         loadSeries()
@@ -287,24 +287,26 @@ class LibraryService: ObservableObject {
             return 0
         }
 
-        var importedCount = 0
-        var totalFound = 0
-
-        // Enumerate all files recursively
-        for case let fileURL as URL in enumerator {
+        // Collect all valid ebook URLs first (synchronously) to avoid makeIterator warning
+        var ebookURLs: [URL] = []
+        while let element = enumerator.nextObject() as? URL {
             // Check if it's a regular file (not a directory)
-            guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+            guard let resourceValues = try? element.resourceValues(forKeys: [.isRegularFileKey]),
                   resourceValues.isRegularFile == true else {
                 continue
             }
 
             // Check if it's a valid ebook file
-            guard isValidEbookFile(fileURL) else {
-                continue
+            if isValidEbookFile(element) {
+                ebookURLs.append(element)
             }
+        }
 
-            totalFound += 1
+        var importedCount = 0
+        let totalFound = ebookURLs.count
 
+        // Now process the collected URLs
+        for fileURL in ebookURLs {
             do {
                 try addBook(from: fileURL)
                 importedCount += 1
