@@ -18,5 +18,7 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: swift build -v
+      working-directory: FolioCore
     - name: Run tests
       run: swift test -v
+      working-directory: FolioCore
