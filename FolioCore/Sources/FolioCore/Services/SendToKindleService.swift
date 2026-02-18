@@ -20,23 +20,26 @@ public actor SendToKindleService {
         public let useTLS: Bool
 
         /// Common SMTP configurations
+        /// Note: We use port 465 (SMTPS/implicit TLS) instead of port 587 (STARTTLS)
+        /// because CFStream's mid-stream TLS upgrade for STARTTLS is unreliable on modern macOS.
+        /// Port 465 establishes TLS from the start, which works much more reliably.
         public static let gmail = SMTPConfiguration(
             host: "smtp.gmail.com",
-            port: 587,
+            port: 465,
             username: "",
             useTLS: true
         )
 
         public static let outlook = SMTPConfiguration(
-            host: "smtp.office365.com",
-            port: 587,
+            host: "smtp-mail.outlook.com",
+            port: 465,
             username: "",
             useTLS: true
         )
 
         public static let icloud = SMTPConfiguration(
             host: "smtp.mail.me.com",
-            port: 587,
+            port: 465,
             username: "",
             useTLS: true
         )
@@ -391,29 +394,25 @@ private actor NativeSMTPClient {
     }
 
     private func sendViaSMTP(to recipient: String, message: String) async throws {
-        // For port 465 (SMTPS), connect with TLS immediately
-        // For port 587 (submission), connect plain then upgrade with STARTTLS
+        // For port 465 (SMTPS), use implicit TLS - configure TLS before opening streams
+        // For port 587 (submission), use STARTTLS - upgrade after plaintext handshake
         let useImplicitTLS = port == 465
 
-        // Use CFStream which properly supports STARTTLS (in-place TLS upgrade)
-        let smtpConnection = try SMTPStreamConnection(host: host, port: port)
-
-        if useImplicitTLS {
-            // Port 465: Enable TLS immediately before any communication
-            try smtpConnection.enableTLS()
-        }
+        // Create connection with implicit TLS if using port 465
+        let smtpConnection = try SMTPStreamConnection(host: host, port: port, implicitTLS: useImplicitTLS)
 
         // SMTP conversation
         try smtpConnection.readResponse() // Read greeting (220)
         try smtpConnection.sendCommand("EHLO folio.local")
         try smtpConnection.readResponse() // Read EHLO response
 
-        // Handle STARTTLS for port 587
+        // Handle STARTTLS for port 587 (less reliable, but still supported)
         if useTLS && !useImplicitTLS {
             try smtpConnection.sendCommand("STARTTLS")
             try smtpConnection.readResponse() // Read 220 Ready to start TLS
 
-            // Upgrade the EXISTING connection to TLS (this is the key fix!)
+            // Attempt to upgrade the connection to TLS
+            // Note: This is less reliable than implicit TLS due to CFStream limitations
             try smtpConnection.enableTLS()
 
             // Re-send EHLO after TLS upgrade
@@ -454,14 +453,24 @@ private actor NativeSMTPClient {
 
 // MARK: - SMTP Stream Connection
 
-/// A CFStream-based connection that supports STARTTLS (in-place TLS upgrade)
+/// A CFStream-based connection for SMTP with TLS support
+///
+/// This implementation properly supports:
+/// - Port 465 (SMTPS): Implicit TLS - TLS configured before opening streams
+/// - Port 587 (Submission): STARTTLS - Upgrade after plaintext handshake (less reliable)
 private final class SMTPStreamConnection: @unchecked Sendable {
     private var inputStream: InputStream?
     private var outputStream: OutputStream?
     private let host: String
     private let port: Int
+    private var tlsEnabled: Bool = false
 
-    init(host: String, port: Int) throws {
+    /// Create a connection with optional implicit TLS (for port 465)
+    /// - Parameters:
+    ///   - host: SMTP server hostname
+    ///   - port: SMTP port (465 for SMTPS, 587 for submission)
+    ///   - implicitTLS: If true, TLS is configured before opening streams (required for port 465)
+    init(host: String, port: Int, implicitTLS: Bool = false) throws {
         self.host = host
         self.port = port
 
@@ -484,12 +493,56 @@ private final class SMTPStreamConnection: @unchecked Sendable {
         inputStream = inputCF as InputStream
         outputStream = outputCF as OutputStream
 
+        // For implicit TLS (port 465), configure TLS BEFORE opening streams
+        // This is the key difference from STARTTLS - SSL must be configured before open()
+        if implicitTLS {
+            try configureImplicitTLS()
+        }
+
         // Open the streams
         inputStream?.open()
         outputStream?.open()
 
         // Wait for streams to be ready
         try waitForStreamsReady()
+
+        if implicitTLS {
+            tlsEnabled = true
+            kindleLogger.debug("Implicit TLS connection established to \(host):\(port)")
+        }
+    }
+
+    /// Configure TLS before opening streams (for implicit TLS / port 465)
+    private func configureImplicitTLS() throws {
+        guard let input = inputStream, let output = outputStream else {
+            throw SendToKindleError.sendFailed("Streams not initialized")
+        }
+
+        // Step 1: Set security level first (this must come before SSL settings)
+        input.setProperty(StreamSocketSecurityLevel.negotiatedSSL, forKey: .socketSecurityLevelKey)
+        output.setProperty(StreamSocketSecurityLevel.negotiatedSSL, forKey: .socketSecurityLevelKey)
+
+        // Step 2: Configure SSL settings (peer name for certificate validation)
+        let sslSettings: [String: Any] = [
+            kCFStreamSSLPeerName as String: host,
+            kCFStreamSSLValidatesCertificateChain as String: true
+        ]
+
+        let inputSuccess = CFReadStreamSetProperty(
+            input as CFReadStream,
+            CFStreamPropertyKey(rawValue: kCFStreamPropertySSLSettings),
+            sslSettings as CFDictionary
+        )
+
+        let outputSuccess = CFWriteStreamSetProperty(
+            output as CFWriteStream,
+            CFStreamPropertyKey(rawValue: kCFStreamPropertySSLSettings),
+            sslSettings as CFDictionary
+        )
+
+        guard inputSuccess && outputSuccess else {
+            throw SendToKindleError.sendFailed("Failed to configure implicit TLS")
+        }
     }
 
     private func waitForStreamsReady() throws {
@@ -522,12 +575,18 @@ private final class SMTPStreamConnection: @unchecked Sendable {
             throw SendToKindleError.sendFailed("Streams not initialized")
         }
 
-        // Set SSL/TLS properties on the existing streams
-        // This is the key difference from NWConnection - we upgrade in-place
+        // Set SSL/TLS properties using Foundation's StreamSocketSecurityLevel
+        // which properly negotiates TLS 1.2+ with modern servers.
+        //
+        // Note: We use .negotiatedSSL which allows the system to negotiate
+        // the highest mutually-supported TLS version. On modern macOS,
+        // this will negotiate TLS 1.2 or 1.3.
+        input.setProperty(StreamSocketSecurityLevel.negotiatedSSL, forKey: .socketSecurityLevelKey)
+        output.setProperty(StreamSocketSecurityLevel.negotiatedSSL, forKey: .socketSecurityLevelKey)
+
+        // Set the peer name for certificate validation
         let sslSettings: [String: Any] = [
-            kCFStreamSSLLevel as String: kCFStreamSocketSecurityLevelNegotiatedSSL,
             kCFStreamSSLPeerName as String: host,
-            // Allow self-signed certs for testing (remove in production if needed)
             kCFStreamSSLValidatesCertificateChain as String: true
         ]
 
