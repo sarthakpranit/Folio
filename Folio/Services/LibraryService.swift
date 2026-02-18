@@ -2,7 +2,25 @@
 //  LibraryService.swift
 //  Folio
 //
-//  Main service for managing the ebook library
+//  LibraryService is the facade for all library operations.
+//  It coordinates specialized services and provides a unified interface for views.
+//
+//  Architecture:
+//  - Facade pattern: Single entry point for UI layer
+//  - Delegates to specialized services: BookRepository, ImportService, SearchService
+//  - Manages @Published state for SwiftUI binding
+//  - Implements HTTPTransferBookProvider for WiFi transfer integration
+//
+//  Specialized Services:
+//  - BookRepository: Core Data CRUD operations
+//  - ImportService: Import workflow with progress tracking
+//  - SearchService: Search and filter operations
+//  - FilenameParser: Filename parsing utility
+//
+//  Usage:
+//    // Views use LibraryService.shared
+//    LibraryService.shared.refresh()
+//    let results = LibraryService.shared.searchBooks(query: "tolkien")
 //
 
 import Foundation
@@ -11,13 +29,19 @@ import Combine
 import UniformTypeIdentifiers
 import FolioCore
 
-/// Main service for managing the ebook library
+/// Facade for library operations - coordinates specialized services
 @MainActor
 class LibraryService: ObservableObject {
     static let shared = LibraryService()
 
-    private let persistenceController: PersistenceController
-    private var cancellables = Set<AnyCancellable>()
+    // MARK: - Specialized Services
+
+    private let repository: BookRepository
+    private let importService: ImportService
+    private let searchService: SearchService
+    private let filenameParser: FilenameParser
+
+    // MARK: - Published State
 
     @Published private(set) var books: [Book] = []
     @Published private(set) var authors: [Author] = []
@@ -26,36 +50,50 @@ class LibraryService: ObservableObject {
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var error: Error?
 
-    // Import progress tracking
-    @Published private(set) var isImporting: Bool = false
-    @Published private(set) var importProgress: Double = 0
-    @Published private(set) var importTotal: Int = 0
-    @Published private(set) var importCurrent: Int = 0
-    @Published private(set) var importCurrentBookName: String = ""
+    // Import progress (delegated from ImportService)
+    var isImporting: Bool { importService.isImporting }
+    var importProgress: Double { importService.importProgress }
+    var importTotal: Int { importService.importTotal }
+    var importCurrent: Int { importService.importCurrent }
+    var importCurrentBookName: String { importService.importCurrentBookName }
 
-    /// Supported import formats
-    let supportedExtensions = ["epub", "mobi", "azw3", "pdf", "cbz", "cbr", "fb2", "txt", "rtf"]
+    /// Supported import formats (delegated from repository)
+    var supportedExtensions: [String] { repository.supportedExtensions }
+
+    private var cancellables = Set<AnyCancellable>()
+
+    // MARK: - Initialization
 
     private init() {
-        self.persistenceController = PersistenceController.shared
+        let context = PersistenceController.shared.container.viewContext
+
+        self.filenameParser = FilenameParser()
+        self.repository = BookRepository(context: context)
+        self.importService = ImportService(repository: repository, parser: filenameParser)
+        self.searchService = SearchService()
+
+        // Forward ImportService state changes
+        importService.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        loadAll()
+    }
+
+    // MARK: - Loading
+
+    private func loadAll() {
         loadBooks()
         loadAuthors()
         loadSeries()
         loadTags()
     }
 
-    // MARK: - Loading
-
-    private var viewContext: NSManagedObjectContext {
-        persistenceController.container.viewContext
-    }
-
     func loadBooks() {
-        let request = Book.fetchRequest()
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \Book.dateAdded, ascending: false)]
-
         do {
-            books = try viewContext.fetch(request)
+            books = try repository.fetchAll()
         } catch {
             self.error = error
             print("Failed to load books: \(error.localizedDescription)")
@@ -63,33 +101,24 @@ class LibraryService: ObservableObject {
     }
 
     func loadAuthors() {
-        let request = Author.fetchRequest()
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \Author.sortName, ascending: true)]
-
         do {
-            authors = try viewContext.fetch(request)
+            authors = try repository.fetchAllAuthors()
         } catch {
             print("Failed to load authors: \(error.localizedDescription)")
         }
     }
 
     func loadSeries() {
-        let request = Series.fetchRequest()
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \Series.name, ascending: true)]
-
         do {
-            series = try viewContext.fetch(request)
+            series = try repository.fetchAllSeries()
         } catch {
             print("Failed to load series: \(error.localizedDescription)")
         }
     }
 
     func loadTags() {
-        let request = Tag.fetchRequest()
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \Tag.name, ascending: true)]
-
         do {
-            tags = try viewContext.fetch(request)
+            tags = try repository.fetchAllTags()
         } catch {
             print("Failed to load tags: \(error.localizedDescription)")
         }
@@ -97,10 +126,7 @@ class LibraryService: ObservableObject {
 
     /// Refresh all data from database
     func refresh() {
-        loadBooks()
-        loadAuthors()
-        loadSeries()
-        loadTags()
+        loadAll()
         objectWillChange.send()
         print("[LibraryService] Refreshed - Authors: \(authors.count), Series: \(series.count), Tags: \(tags.count)")
     }
@@ -108,66 +134,17 @@ class LibraryService: ObservableObject {
     // MARK: - Add Book
 
     /// Add a single book to the library
-    /// - Parameters:
-    ///   - fileURL: URL of the ebook file
-    ///   - shouldCopy: Whether to copy the file to the library folder
-    /// - Returns: The created Book entity
     @discardableResult
     func addBook(from fileURL: URL, shouldCopy: Bool = false) throws -> Book {
-        // Start accessing security-scoped resource for files from Finder
-        let accessing = fileURL.startAccessingSecurityScopedResource()
-        defer {
-            if accessing {
-                fileURL.stopAccessingSecurityScopedResource()
-            }
-        }
+        let parsed = filenameParser.parse(fileURL.lastPathComponent)
+        let sortTitle = repository.generateSortTitle(parsed.title)
 
-        guard isValidEbookFile(fileURL) else {
-            throw LibraryError.invalidFormat(fileURL.pathExtension)
-        }
-
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            throw LibraryError.fileNotFound(fileURL)
-        }
-
-        let book = Book(context: viewContext)
-        book.id = UUID()
-        book.fileURL = fileURL
-        book.format = fileURL.pathExtension.lowercased()
-        book.fileSize = getFileSize(fileURL)
-        book.dateAdded = Date()
-        book.dateModified = Date()
-
-        // Create and store a security-scoped bookmark for persistent file access
-        do {
-            let bookmarkData = try fileURL.bookmarkData(
-                options: .withSecurityScope,
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-            book.bookmarkData = bookmarkData
-            print("Created security-scoped bookmark for: \(fileURL.lastPathComponent)")
-        } catch {
-            print("Failed to create bookmark for \(fileURL.lastPathComponent): \(error)")
-            // Continue without bookmark - file may still work if accessed in same session
-        }
-
-        // Extract title and author from filename
-        let parsed = parseFilename(fileURL.lastPathComponent)
-        book.title = parsed.title
-        book.sortTitle = generateSortTitle(parsed.title)
-
-        // Set author if extracted from filename
-        if let authorName = parsed.author, !authorName.isEmpty {
-            let author = findOrCreateAuthor(name: authorName)
-            book.addToAuthors(author)
-            print("Extracted author from filename: \(authorName)")
-        }
-
-        try viewContext.save()
-
-        // Refresh the context to ensure @FetchRequest sees the changes
-        viewContext.refreshAllObjects()
+        let book = try repository.add(
+            from: fileURL,
+            title: parsed.title,
+            sortTitle: sortTitle,
+            authorName: parsed.author
+        )
 
         loadBooks()
         objectWillChange.send()
@@ -176,326 +153,80 @@ class LibraryService: ObservableObject {
         return book
     }
 
-    /// Import multiple books from URLs (e.g., from drag and drop)
+    /// Import multiple books from URLs
     func importBooks(from urls: [URL]) async -> ImportResult {
         isLoading = true
-        isImporting = true
-        importProgress = 0
-        importCurrent = 0
-        importCurrentBookName = "Scanning files..."
-
         defer {
             isLoading = false
-            isImporting = false
-            importProgress = 1.0
-            importCurrentBookName = ""
+            loadAll()
+            objectWillChange.send()
         }
 
-        var imported = 0
-        var failed = 0
-        var errors: [String] = []
-
-        // First, collect all files to import (for progress calculation)
-        var filesToImport: [URL] = []
-        for url in urls {
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer {
-                if accessing {
-                    url.stopAccessingSecurityScopedResource()
-                }
-            }
-
-            if url.hasDirectoryPath {
-                // Collect files from directory
-                if let files = collectEbookFiles(from: url) {
-                    filesToImport.append(contentsOf: files)
-                }
-            } else if isValidEbookFile(url) {
-                filesToImport.append(url)
-            }
-        }
-
-        importTotal = filesToImport.count
-        guard importTotal > 0 else {
-            return ImportResult(imported: 0, failed: 0, errors: ["No valid ebook files found"])
-        }
-
-        // Now import each file with progress updates
-        for (index, fileURL) in filesToImport.enumerated() {
-            importCurrent = index + 1
-            importCurrentBookName = fileURL.lastPathComponent
-            importProgress = Double(index) / Double(importTotal)
-
-            do {
-                let accessing = fileURL.startAccessingSecurityScopedResource()
-                defer {
-                    if accessing {
-                        fileURL.stopAccessingSecurityScopedResource()
-                    }
-                }
-
-                try addBook(from: fileURL)
-                imported += 1
-            } catch {
-                failed += 1
-                errors.append("\(fileURL.lastPathComponent): \(error.localizedDescription)")
-            }
-
-            // Small delay to allow UI updates
-            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
-        }
-
-        importProgress = 1.0
-        return ImportResult(imported: imported, failed: failed, errors: errors)
-    }
-
-    /// Collect all ebook files from a directory (for progress calculation)
-    private func collectEbookFiles(from directoryURL: URL) -> [URL]? {
-        let fileManager = FileManager.default
-
-        guard let enumerator = fileManager.enumerator(
-            at: directoryURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
-            return nil
-        }
-
-        var files: [URL] = []
-        for case let fileURL as URL in enumerator {
-            guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
-                  resourceValues.isRegularFile == true,
-                  isValidEbookFile(fileURL) else {
-                continue
-            }
-            files.append(fileURL)
-        }
-        return files
-    }
-
-    /// Import all ebooks from a directory (recursively searches all subdirectories)
-    private func importBooksFromDirectory(_ directoryURL: URL) async throws -> Int {
-        let fileManager = FileManager.default
-
-        // Use enumerator for recursive directory traversal
-        guard let enumerator = fileManager.enumerator(
-            at: directoryURL,
-            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
-            print("Failed to create directory enumerator for: \(directoryURL.path)")
-            return 0
-        }
-
-        // Collect all valid ebook URLs first (synchronously) to avoid makeIterator warning
-        var ebookURLs: [URL] = []
-        while let element = enumerator.nextObject() as? URL {
-            // Check if it's a regular file (not a directory)
-            guard let resourceValues = try? element.resourceValues(forKeys: [.isRegularFileKey]),
-                  resourceValues.isRegularFile == true else {
-                continue
-            }
-
-            // Check if it's a valid ebook file
-            if isValidEbookFile(element) {
-                ebookURLs.append(element)
-            }
-        }
-
-        var importedCount = 0
-        let totalFound = ebookURLs.count
-
-        // Now process the collected URLs
-        for fileURL in ebookURLs {
-            do {
-                try addBook(from: fileURL)
-                importedCount += 1
-
-                // Log progress for large imports
-                if importedCount % 10 == 0 {
-                    print("Imported \(importedCount) books so far...")
-                }
-            } catch {
-                print("Failed to import \(fileURL.lastPathComponent): \(error.localizedDescription)")
-            }
-        }
-
-        print("Recursive import complete: \(importedCount)/\(totalFound) books imported from \(directoryURL.lastPathComponent)")
-        return importedCount
+        return await importService.importBooks(from: urls)
     }
 
     // MARK: - Delete Book
 
     /// Delete a book from the library
     func deleteBook(_ book: Book, deleteFile: Bool = false) throws {
-        if deleteFile, let fileURL = book.fileURL {
-            try? FileManager.default.removeItem(at: fileURL)
-        }
-
-        viewContext.delete(book)
-        try viewContext.save()
+        try repository.delete(book, deleteFile: deleteFile)
         loadBooks()
-
         print("Deleted book: \(book.title ?? "Unknown")")
     }
 
     /// Delete multiple books
     func deleteBooks(_ booksToDelete: [Book], deleteFiles: Bool = false) throws {
-        for book in booksToDelete {
-            if deleteFiles, let fileURL = book.fileURL {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
-            viewContext.delete(book)
-        }
-
-        try viewContext.save()
+        try repository.deleteMultiple(booksToDelete, deleteFiles: deleteFiles)
         loadBooks()
+    }
+
+    // MARK: - Update Book
+
+    /// Update book metadata
+    func updateBook(_ book: Book, title: String? = nil, authors: [String]? = nil, summary: String? = nil) throws {
+        try repository.update(book, title: title, authorNames: authors, summary: summary)
+        loadBooks()
+        loadAuthors()
+    }
+
+    /// Set cover image for book
+    func setCoverImage(_ imageData: Data, for book: Book) throws {
+        try repository.setCoverImage(imageData, for: book)
     }
 
     // MARK: - Title Cleanup
 
-    /// Result of cleaning book titles
-    struct CleanupResult {
-        let booksProcessed: Int
-        let titlesFixed: Int
-        let authorsExtracted: Int
-    }
-
     /// Clean up book titles by extracting embedded author names
-    /// This fixes books where the title contains "Title - Author" format
-    /// and also removes author names that appear at the end of titles without separators
-    func cleanupBookTitles(books booksToClean: [Book]? = nil) -> CleanupResult {
+    func cleanupBookTitles(books booksToClean: [Book]? = nil) -> SearchService.CleanupResult {
         let targetBooks = booksToClean ?? self.books
-        var titlesFixed = 0
-        var authorsExtracted = 0
 
-        for book in targetBooks {
-            guard let currentTitle = book.title else { continue }
-
-            // Step 0: Normalize whitespace first (collapse multiple spaces)
-            var newTitle = normalizeWhitespace(currentTitle)
-            var didFix = newTitle != currentTitle // Track if normalization alone changed it
-
-            // Step 1: If book already has authors, remove their names from the title
-            // This handles cases like "2312 Kim Stanley Robinson" -> "2312" when author is "Kim Stanley Robinson"
-            if let existingAuthors = book.authors as? Set<Author>, !existingAuthors.isEmpty {
-                for author in existingAuthors {
-                    guard let authorName = author.name, !authorName.isEmpty else { continue }
-
-                    // Normalize for comparison
-                    let normalizedTitle = normalizeWhitespace(newTitle).lowercased()
-                    let normalizedAuthor = normalizeWhitespace(authorName).lowercased()
-
-                    // Check if author name appears at the end of the title
-                    if normalizedTitle.hasSuffix(normalizedAuthor) {
-                        // Find where the author name starts and remove it
-                        let titleWithoutAuthor = String(newTitle.dropLast(authorName.count))
-                        newTitle = normalizeWhitespace(titleWithoutAuthor)
-                        didFix = true
-                        print("Removed author '\(authorName)' from end of title")
-                    }
-                    // Also check if author name appears at the start
-                    else if normalizedTitle.hasPrefix(normalizedAuthor) {
-                        let titleWithoutAuthor = String(newTitle.dropFirst(authorName.count))
-                        newTitle = normalizeWhitespace(titleWithoutAuthor)
-                        didFix = true
-                        print("Removed author '\(authorName)' from start of title")
-                    }
-                }
+        let result = searchService.cleanupBookTitles(
+            books: targetBooks,
+            parser: filenameParser,
+            findOrCreateAuthor: { [weak self] name in
+                self?.repository.findOrCreateAuthor(name: name) ?? Author()
+            },
+            generateSortTitle: { [weak self] title in
+                self?.repository.generateSortTitle(title) ?? title.lowercased()
             }
+        )
 
-            // Step 2: Try parsing for separator-based patterns (Title - Author, etc.)
-            let parsed = parseFilename(newTitle + ".epub") // Add fake extension for parsing
-
-            // Only update if we found an author AND the title changed significantly
-            if let extractedAuthor = parsed.author,
-               !extractedAuthor.isEmpty,
-               parsed.title != newTitle {
-
-                // Check if book already has this author
-                let existingAuthors = (book.authors as? Set<Author>) ?? []
-                let hasAuthor = existingAuthors.contains { author in
-                    author.name?.lowercased() == extractedAuthor.lowercased()
-                }
-
-                newTitle = normalizeWhitespace(parsed.title)
-                didFix = true
-
-                // Add author if not already present
-                if !hasAuthor {
-                    let author = findOrCreateAuthor(name: extractedAuthor)
-                    book.addToAuthors(author)
-                    authorsExtracted += 1
-                    print("Extracted author: '\(extractedAuthor)'")
-                }
-            }
-
-            // Step 3: Final normalization and apply changes
-            newTitle = normalizeWhitespace(newTitle)
-
-            // Apply the fix if any changes were made
-            if didFix && newTitle != currentTitle {
-                let oldTitle = book.title
-                book.title = newTitle
-                book.sortTitle = generateSortTitle(newTitle)
-                titlesFixed += 1
-                print("Fixed title: '\(oldTitle ?? "")' -> '\(newTitle)'")
-            }
-        }
-
-        // Save changes
-        if titlesFixed > 0 {
-            try? viewContext.save()
+        if result.titlesFixed > 0 {
+            try? repository.save()
             loadBooks()
             loadAuthors()
             objectWillChange.send()
         }
 
-        return CleanupResult(
-            booksProcessed: targetBooks.count,
-            titlesFixed: titlesFixed,
-            authorsExtracted: authorsExtracted
-        )
+        return result
     }
 
-    // MARK: - Search
+    // MARK: - Search & Filter
 
     /// Search books by query
     func searchBooks(query: String) -> [Book] {
-        guard !query.isEmpty else { return books }
-
-        let lowercasedQuery = query.lowercased()
-
-        return books.filter { book in
-            // Title match
-            if book.title?.lowercased().contains(lowercasedQuery) == true {
-                return true
-            }
-
-            // Author match
-            if let bookAuthors = book.authors as? Set<Author> {
-                for author in bookAuthors {
-                    if author.name?.lowercased().contains(lowercasedQuery) == true {
-                        return true
-                    }
-                }
-            }
-
-            // ISBN match
-            if book.isbn?.contains(query) == true || book.isbn13?.contains(query) == true {
-                return true
-            }
-
-            // Series match
-            if book.series?.name?.lowercased().contains(lowercasedQuery) == true {
-                return true
-            }
-
-            return false
-        }
+        searchService.search(books: books, query: query)
     }
-
-    // MARK: - Filter
 
     /// Filter books by various criteria
     func filterBooks(
@@ -504,132 +235,35 @@ class LibraryService: ObservableObject {
         byTags filterTags: [Tag]? = nil,
         byFormat format: String? = nil
     ) -> [Book] {
-        var result = books
-
-        if let filterAuthors = filterAuthors, !filterAuthors.isEmpty {
-            result = result.filter { book in
-                guard let bookAuthors = book.authors as? Set<Author> else { return false }
-                return !bookAuthors.isDisjoint(with: Set(filterAuthors))
-            }
-        }
-
-        if let filterSeries = filterSeries {
-            result = result.filter { $0.series == filterSeries }
-        }
-
-        if let filterTags = filterTags, !filterTags.isEmpty {
-            result = result.filter { book in
-                guard let bookTags = book.tags as? Set<Tag> else { return false }
-                return !bookTags.isDisjoint(with: Set(filterTags))
-            }
-        }
-
-        if let format = format {
-            result = result.filter { $0.format == format }
-        }
-
-        return result
+        searchService.filter(
+            books: books,
+            byAuthors: filterAuthors,
+            bySeries: filterSeries,
+            byTags: filterTags,
+            byFormat: format
+        )
     }
 
-    // MARK: - Update Book
-
-    /// Update book metadata
-    func updateBook(_ book: Book, title: String? = nil, authors: [String]? = nil, summary: String? = nil) throws {
-        if let title = title {
-            book.title = title
-            book.sortTitle = generateSortTitle(title)
-        }
-
-        if let authorNames = authors {
-            // Clear existing authors
-            book.authors = nil
-
-            for authorName in authorNames {
-                let author = findOrCreateAuthor(name: authorName)
-                book.addToAuthors(author)
-            }
-        }
-
-        if let summary = summary {
-            book.summary = summary
-        }
-
-        book.dateModified = Date()
-
-        try viewContext.save()
-        loadBooks()
-        loadAuthors()
-    }
-
-    /// Set cover image for book
-    func setCoverImage(_ imageData: Data, for book: Book) throws {
-        book.coverImageData = imageData
-        book.dateModified = Date()
-        try viewContext.save()
-    }
-
-    // MARK: - Authors
+    // MARK: - Relationship Entities
 
     /// Find or create an author by name
     func findOrCreateAuthor(name: String) -> Author {
-        let request = Author.fetchRequest()
-        request.predicate = NSPredicate(format: "name ==[c] %@", name)
-        request.fetchLimit = 1
-
-        if let existing = try? viewContext.fetch(request).first {
-            return existing
-        }
-
-        let author = Author(context: viewContext)
-        author.id = UUID()
-        author.name = name
-        author.sortName = generateSortName(name)
-        return author
+        repository.findOrCreateAuthor(name: name)
     }
-
-    // MARK: - Series
 
     /// Find or create a series by name
     func findOrCreateSeries(name: String) -> Series {
-        let request = Series.fetchRequest()
-        request.predicate = NSPredicate(format: "name ==[c] %@", name)
-        request.fetchLimit = 1
-
-        if let existing = try? viewContext.fetch(request).first {
-            return existing
-        }
-
-        let newSeries = Series(context: viewContext)
-        newSeries.id = UUID()
-        newSeries.name = name
-        return newSeries
+        repository.findOrCreateSeries(name: name)
     }
-
-    // MARK: - Tags
 
     /// Find or create a tag by name
     func findOrCreateTag(name: String, color: String? = nil) -> Tag {
-        let request = Tag.fetchRequest()
-        request.predicate = NSPredicate(format: "name ==[c] %@", name)
-        request.fetchLimit = 1
-
-        if let existing = try? viewContext.fetch(request).first {
-            return existing
-        }
-
-        let tag = Tag(context: viewContext)
-        tag.id = UUID()
-        tag.name = name
-        tag.color = color
-        return tag
+        repository.findOrCreateTag(name: name, color: color)
     }
 
     /// Add tag to book
     func addTag(_ tagName: String, to book: Book, color: String? = nil) throws {
-        let tag = findOrCreateTag(name: tagName, color: color)
-        book.addToTags(tag)
-        book.dateModified = Date()
-        try viewContext.save()
+        try repository.addTag(tagName, to: book, color: color)
         loadTags()
     }
 
@@ -637,202 +271,26 @@ class LibraryService: ObservableObject {
 
     /// Create a new collection
     func createCollection(name: String, iconName: String? = nil) throws -> Collection {
-        let collection = Collection(context: viewContext)
-        collection.id = UUID()
-        collection.name = name
-        collection.iconName = iconName
-        collection.dateCreated = Date()
-
-        try viewContext.save()
-        return collection
+        try repository.createCollection(name: name, iconName: iconName)
     }
 
     // MARK: - Statistics
 
     /// Get library statistics
     var statistics: LibraryStatistics {
-        let totalBooks = books.count
-        let totalSize = books.reduce(0) { $0 + $1.fileSize }
-
-        var formatCounts: [String: Int] = [:]
-        for book in books {
-            if let format = book.format {
-                formatCounts[format, default: 0] += 1
-            }
-        }
-
-        return LibraryStatistics(
-            totalBooks: totalBooks,
-            totalSizeBytes: totalSize,
-            formatCounts: formatCounts,
-            authorCount: authors.count,
-            seriesCount: series.count,
-            tagCount: tags.count
+        searchService.calculateStatistics(
+            books: books,
+            authors: authors,
+            series: series,
+            tags: tags
         )
     }
 
     // MARK: - Helpers
 
-    private func isValidEbookFile(_ url: URL) -> Bool {
-        supportedExtensions.contains(url.pathExtension.lowercased())
-    }
-
-    private func getFileSize(_ url: URL) -> Int64 {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attributes[.size] as? Int64 else {
-            return 0
-        }
-        return size
-    }
-
-    /// Parsed result from filename containing title and optional author
-    struct ParsedFilename {
-        let title: String
-        let author: String?
-    }
-
-    /// Extract title and author from a filename
-    /// Supports patterns like:
-    /// - "Title - Author.epub"
-    /// - "Author - Title.epub" (less common, detected by checking if first part looks like a name)
-    /// - "Title (Author).epub"
-    /// - "Title by Author.epub"
-    private func parseFilename(_ filename: String) -> ParsedFilename {
-        var name = filename
-
-        // Remove extension
-        if let dotIndex = name.lastIndex(of: ".") {
-            name = String(name[..<dotIndex])
-        }
-
-        // Replace underscores with spaces
-        name = name.replacingOccurrences(of: "_", with: " ")
-
-        // Try different patterns
-
-        // Pattern 1: "Title (Author)" or "Title [Author]"
-        if let parenMatch = name.range(of: #"\s*[\(\[]([^\)\]]+)[\)\]]\s*$"#, options: .regularExpression) {
-            let authorPart = String(name[parenMatch])
-                .trimmingCharacters(in: CharacterSet(charactersIn: "()[] "))
-            let titlePart = String(name[..<parenMatch.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if !authorPart.isEmpty && !titlePart.isEmpty {
-                return ParsedFilename(title: titlePart, author: authorPart)
-            }
-        }
-
-        // Pattern 2: "Title by Author"
-        if let byRange = name.range(of: " by ", options: .caseInsensitive) {
-            let titlePart = String(name[..<byRange.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let authorPart = String(name[byRange.upperBound...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if !authorPart.isEmpty && !titlePart.isEmpty && looksLikeAuthorName(authorPart) {
-                return ParsedFilename(title: titlePart, author: authorPart)
-            }
-        }
-
-        // Pattern 3: "Title - Author" (most common)
-        // Split on " - " and determine which part is title vs author
-        let dashSeparators = [" - ", " – ", " — "]  // Regular dash, en-dash, em-dash
-        for separator in dashSeparators {
-            if let dashRange = name.range(of: separator) {
-                let firstPart = String(name[..<dashRange.lowerBound])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let secondPart = String(name[dashRange.upperBound...])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-
-                // The author part usually looks like a name (capitalized words, no special chars)
-                // Title is usually longer and may have more varied characters
-                if !firstPart.isEmpty && !secondPart.isEmpty {
-                    if looksLikeAuthorName(secondPart) && !looksLikeAuthorName(firstPart) {
-                        // "Title - Author" format
-                        return ParsedFilename(title: firstPart, author: secondPart)
-                    } else if looksLikeAuthorName(firstPart) && !looksLikeAuthorName(secondPart) {
-                        // "Author - Title" format
-                        return ParsedFilename(title: secondPart, author: firstPart)
-                    } else if looksLikeAuthorName(secondPart) {
-                        // Default to "Title - Author" if both could be names
-                        return ParsedFilename(title: firstPart, author: secondPart)
-                    }
-                }
-            }
-        }
-
-        // No pattern matched - just clean up and return as title
-        let cleanedTitle = name
-            .replacingOccurrences(of: "-", with: " ")
-            .components(separatedBy: .whitespaces)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        return ParsedFilename(title: cleanedTitle, author: nil)
-    }
-
-    /// Normalize whitespace in a string (collapse multiple spaces to single, trim edges)
-    private func normalizeWhitespace(_ text: String) -> String {
-        return text
-            .components(separatedBy: .whitespaces)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
-
-    /// Check if a string looks like an author name (e.g., "J.R.R. Tolkien", "George R.R. Martin")
-    private func looksLikeAuthorName(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Author names are typically 2-5 words
-        let words = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-        guard words.count >= 1 && words.count <= 6 else { return false }
-
-        // Check if words look like name parts (capitalized, possibly with periods for initials)
-        // Uses Unicode property escapes to support accented characters (José, García, etc.)
-        let namePattern = #"^\p{Lu}[\p{L}]*\.?$"#
-        let regex = try? NSRegularExpression(pattern: namePattern)
-
-        var nameWordCount = 0
-        for word in words {
-            let range = NSRange(word.startIndex..., in: word)
-            if regex?.firstMatch(in: word, range: range) != nil {
-                nameWordCount += 1
-            }
-        }
-
-        // Most words should look like names
-        return Double(nameWordCount) / Double(words.count) >= 0.5
-    }
-
-    /// Legacy function for backward compatibility - extracts only title
-    private func extractTitleFromFilename(_ filename: String) -> String {
-        return parseFilename(filename).title
-    }
-
-    /// Generate a sort-friendly title by removing leading articles
+    /// Generate a sort-friendly title
     func generateSortTitle(_ title: String) -> String {
-        let articles = ["the ", "a ", "an "]
-        var result = title.lowercased()
-
-        for article in articles {
-            if result.hasPrefix(article) {
-                result = String(result.dropFirst(article.count))
-                break
-            }
-        }
-
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func generateSortName(_ name: String) -> String {
-        // "John Smith" -> "Smith, John"
-        let components = name.components(separatedBy: " ")
-        guard components.count > 1 else { return name }
-
-        let lastName = components.last ?? ""
-        let firstNames = components.dropLast().joined(separator: " ")
-        return "\(lastName), \(firstNames)"
+        repository.generateSortTitle(title)
     }
 }
 
@@ -915,7 +373,7 @@ extension LibraryService: HTTPTransferBookProvider {
         return EbookFormat(fileExtension: formatString)
     }
 
-    /// Get security-scoped bookmark data for a book (for external volume access)
+    /// Get security-scoped bookmark data for a book
     func getBookmarkData(id: String) -> Data? {
         guard let uuid = UUID(uuidString: id),
               let book = books.first(where: { $0.id == uuid }) else { return nil }

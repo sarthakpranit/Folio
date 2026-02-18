@@ -307,8 +307,8 @@ public actor SendToKindleService {
 
 // MARK: - Native SMTP Client
 
-/// A native Swift SMTP client using Network.framework
-/// This implementation is sandbox-compatible and doesn't require subprocess execution
+/// A native Swift SMTP client using CFStream for STARTTLS support
+/// This implementation properly supports in-place TLS upgrade required by STARTTLS
 private actor NativeSMTPClient {
     private let host: String
     private let port: Int
@@ -395,157 +395,307 @@ private actor NativeSMTPClient {
         // For port 587 (submission), connect plain then upgrade with STARTTLS
         let useImplicitTLS = port == 465
 
-        var connection = try await establishConnection(withTLS: useImplicitTLS)
+        // Use CFStream which properly supports STARTTLS (in-place TLS upgrade)
+        let smtpConnection = try SMTPStreamConnection(host: host, port: port)
+
+        if useImplicitTLS {
+            // Port 465: Enable TLS immediately before any communication
+            try smtpConnection.enableTLS()
+        }
 
         // SMTP conversation
-        try await readResponse(connection) // Read greeting (220)
-        try await sendCommand(connection, "EHLO folio.local")
-        try await readResponse(connection) // Read EHLO response
+        try smtpConnection.readResponse() // Read greeting (220)
+        try smtpConnection.sendCommand("EHLO folio.local")
+        try smtpConnection.readResponse() // Read EHLO response
 
         // Handle STARTTLS for port 587
         if useTLS && !useImplicitTLS {
-            try await sendCommand(connection, "STARTTLS")
-            try await readResponse(connection) // Read 220 Ready to start TLS
+            try smtpConnection.sendCommand("STARTTLS")
+            try smtpConnection.readResponse() // Read 220 Ready to start TLS
 
-            // Close the plain connection and establish a new TLS connection
-            connection.cancel()
-            connection = try await establishConnection(withTLS: true)
+            // Upgrade the EXISTING connection to TLS (this is the key fix!)
+            try smtpConnection.enableTLS()
 
             // Re-send EHLO after TLS upgrade
-            try await sendCommand(connection, "EHLO folio.local")
-            try await readResponse(connection)
+            try smtpConnection.sendCommand("EHLO folio.local")
+            try smtpConnection.readResponse()
         }
 
         // Authenticate using AUTH LOGIN
-        try await sendCommand(connection, "AUTH LOGIN")
-        try await readResponse(connection) // Read 334 (username prompt)
+        try smtpConnection.sendCommand("AUTH LOGIN")
+        try smtpConnection.readResponse() // Read 334 (username prompt)
 
         let base64User = Data(username.utf8).base64EncodedString()
-        try await sendCommand(connection, base64User)
-        try await readResponse(connection) // Read 334 (password prompt)
+        try smtpConnection.sendCommand(base64User)
+        try smtpConnection.readResponse() // Read 334 (password prompt)
 
         let base64Pass = Data(password.utf8).base64EncodedString()
-        try await sendCommand(connection, base64Pass)
-        try await readResponse(connection) // Read 235 (auth successful)
+        try smtpConnection.sendCommand(base64Pass)
+        try smtpConnection.readResponse() // Read 235 (auth successful)
 
         // Send email envelope
-        try await sendCommand(connection, "MAIL FROM:<\(username)>")
-        try await readResponse(connection) // Read 250
+        try smtpConnection.sendCommand("MAIL FROM:<\(username)>")
+        try smtpConnection.readResponse() // Read 250
 
-        try await sendCommand(connection, "RCPT TO:<\(recipient)>")
-        try await readResponse(connection) // Read 250
+        try smtpConnection.sendCommand("RCPT TO:<\(recipient)>")
+        try smtpConnection.readResponse() // Read 250
 
-        try await sendCommand(connection, "DATA")
-        try await readResponse(connection) // Read 354
+        try smtpConnection.sendCommand("DATA")
+        try smtpConnection.readResponse() // Read 354
 
         // Send message body (end with CRLF.CRLF)
-        try await sendData(connection, message + "\r\n.\r\n")
-        try await readResponse(connection) // Read 250
+        try smtpConnection.sendData(message + "\r\n.\r\n")
+        try smtpConnection.readResponse() // Read 250
 
-        try await sendCommand(connection, "QUIT")
-        // Don't wait for QUIT response, just close
-        connection.cancel()
+        try smtpConnection.sendCommand("QUIT")
+        smtpConnection.close()
     }
+}
 
-    private func establishConnection(withTLS: Bool) async throws -> NWConnection {
-        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(integerLiteral: UInt16(port)))
+// MARK: - SMTP Stream Connection
 
-        let parameters: NWParameters
-        if withTLS {
-            // Create TLS options that accept the server's certificate
-            let tlsOptions = NWProtocolTLS.Options()
-            sec_protocol_options_set_verify_block(tlsOptions.securityProtocolOptions, { _, trust, complete in
-                // In production, you should properly validate the certificate
-                // For now, we trust the connection (standard SMTP servers use valid certs)
-                complete(true)
-            }, .main)
-            parameters = NWParameters(tls: tlsOptions)
-        } else {
-            parameters = .tcp
+/// A CFStream-based connection that supports STARTTLS (in-place TLS upgrade)
+private final class SMTPStreamConnection: @unchecked Sendable {
+    private var inputStream: InputStream?
+    private var outputStream: OutputStream?
+    private let host: String
+    private let port: Int
+
+    init(host: String, port: Int) throws {
+        self.host = host
+        self.port = port
+
+        var readStream: Unmanaged<CFReadStream>?
+        var writeStream: Unmanaged<CFWriteStream>?
+
+        CFStreamCreatePairWithSocketToHost(
+            kCFAllocatorDefault,
+            host as CFString,
+            UInt32(port),
+            &readStream,
+            &writeStream
+        )
+
+        guard let inputCF = readStream?.takeRetainedValue(),
+              let outputCF = writeStream?.takeRetainedValue() else {
+            throw SendToKindleError.sendFailed("Failed to create socket streams to \(host):\(port)")
         }
 
-        let connection = NWConnection(to: endpoint, using: parameters)
+        inputStream = inputCF as InputStream
+        outputStream = outputCF as OutputStream
 
-        return try await withCheckedThrowingContinuation { continuation in
-            // Use a class to track resume state safely across concurrent callbacks
-            final class ResumeState: @unchecked Sendable {
-                private let lock = NSLock()
-                private var _hasResumed = false
+        // Open the streams
+        inputStream?.open()
+        outputStream?.open()
 
-                var hasResumed: Bool {
-                    get { lock.withLock { _hasResumed } }
-                    set { lock.withLock { _hasResumed = newValue } }
-                }
+        // Wait for streams to be ready
+        try waitForStreamsReady()
+    }
+
+    private func waitForStreamsReady() throws {
+        let timeout: TimeInterval = 30
+        let startTime = Date()
+
+        while Date().timeIntervalSince(startTime) < timeout {
+            let inputStatus = inputStream?.streamStatus ?? .error
+            let outputStatus = outputStream?.streamStatus ?? .error
+
+            if inputStatus == .error || outputStatus == .error {
+                let inputError = inputStream?.streamError?.localizedDescription ?? "unknown"
+                let outputError = outputStream?.streamError?.localizedDescription ?? "unknown"
+                throw SendToKindleError.sendFailed("Stream error - input: \(inputError), output: \(outputError)")
             }
 
-            let state = ResumeState()
-
-            connection.stateUpdateHandler = { connectionState in
-                guard !state.hasResumed else { return }
-                switch connectionState {
-                case .ready:
-                    state.hasResumed = true
-                    continuation.resume(returning: connection)
-                case .failed(let error):
-                    state.hasResumed = true
-                    continuation.resume(throwing: SendToKindleError.sendFailed("Connection failed: \(error.localizedDescription)"))
-                case .cancelled:
-                    state.hasResumed = true
-                    continuation.resume(throwing: SendToKindleError.sendFailed("Connection cancelled"))
-                default:
-                    break
-                }
+            if inputStatus == .open && outputStatus == .open {
+                return // Ready!
             }
-            connection.start(queue: .global())
+
+            Thread.sleep(forTimeInterval: 0.05)
         }
+
+        throw SendToKindleError.sendFailed("Timeout waiting for streams to open")
     }
 
-    private func sendCommand(_ connection: NWConnection, _ command: String) async throws {
-        let data = Data((command + "\r\n").utf8)
-        try await sendData(connection, data)
+    /// Upgrade the existing connection to TLS (supports STARTTLS)
+    func enableTLS() throws {
+        guard let input = inputStream, let output = outputStream else {
+            throw SendToKindleError.sendFailed("Streams not initialized")
+        }
+
+        // Set SSL/TLS properties on the existing streams
+        // This is the key difference from NWConnection - we upgrade in-place
+        let sslSettings: [String: Any] = [
+            kCFStreamSSLLevel as String: kCFStreamSocketSecurityLevelNegotiatedSSL,
+            kCFStreamSSLPeerName as String: host,
+            // Allow self-signed certs for testing (remove in production if needed)
+            kCFStreamSSLValidatesCertificateChain as String: true
+        ]
+
+        // Apply SSL settings to both streams
+        let inputSuccess = CFReadStreamSetProperty(
+            input as CFReadStream,
+            CFStreamPropertyKey(rawValue: kCFStreamPropertySSLSettings),
+            sslSettings as CFDictionary
+        )
+
+        let outputSuccess = CFWriteStreamSetProperty(
+            output as CFWriteStream,
+            CFStreamPropertyKey(rawValue: kCFStreamPropertySSLSettings),
+            sslSettings as CFDictionary
+        )
+
+        guard inputSuccess && outputSuccess else {
+            throw SendToKindleError.sendFailed("Failed to enable TLS on streams")
+        }
+
+        // Wait for TLS handshake to complete
+        try waitForTLSHandshake()
+
+        kindleLogger.debug("TLS enabled successfully for \(self.host)")
     }
 
-    private func sendData(_ connection: NWConnection, _ string: String) async throws {
-        let data = Data(string.utf8)
-        try await sendData(connection, data)
+    private func waitForTLSHandshake() throws {
+        let timeout: TimeInterval = 30
+        let startTime = Date()
+
+        while Date().timeIntervalSince(startTime) < timeout {
+            // Check for errors
+            if let inputError = inputStream?.streamError {
+                throw SendToKindleError.sendFailed("TLS handshake failed (input): \(inputError.localizedDescription)")
+            }
+            if let outputError = outputStream?.streamError {
+                throw SendToKindleError.sendFailed("TLS handshake failed (output): \(outputError.localizedDescription)")
+            }
+
+            // Check if streams are still open (TLS upgrade preserves open state)
+            let inputStatus = inputStream?.streamStatus ?? .error
+            let outputStatus = outputStream?.streamStatus ?? .error
+
+            if inputStatus == .open && outputStatus == .open {
+                // Give a small delay for TLS negotiation to fully complete
+                Thread.sleep(forTimeInterval: 0.1)
+                return
+            }
+
+            if inputStatus == .error || outputStatus == .error {
+                throw SendToKindleError.sendFailed("Stream entered error state during TLS handshake")
+            }
+
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        throw SendToKindleError.sendFailed("TLS handshake timeout")
     }
 
-    private func sendData(_ connection: NWConnection, _ data: Data) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error = error {
-                    continuation.resume(throwing: SendToKindleError.sendFailed("Send error: \(error.localizedDescription)"))
-                } else {
-                    continuation.resume()
-                }
-            })
+    func sendCommand(_ command: String) throws {
+        try sendData(command + "\r\n")
+    }
+
+    func sendData(_ data: String) throws {
+        guard let output = outputStream else {
+            throw SendToKindleError.sendFailed("Output stream not available")
+        }
+
+        guard let dataBytes = data.data(using: .utf8) else {
+            throw SendToKindleError.sendFailed("Failed to encode data as UTF-8")
+        }
+
+        var totalWritten = 0
+        let bytes = [UInt8](dataBytes)
+
+        while totalWritten < bytes.count {
+            let written = output.write(bytes, maxLength: bytes.count - totalWritten)
+            if written < 0 {
+                throw SendToKindleError.sendFailed("Write error: \(output.streamError?.localizedDescription ?? "unknown")")
+            }
+            if written == 0 {
+                // Stream is full, wait a bit
+                Thread.sleep(forTimeInterval: 0.01)
+                continue
+            }
+            totalWritten += written
         }
     }
 
     @discardableResult
-    private func readResponse(_ connection: NWConnection) async throws -> String {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, error in
-                if let error = error {
-                    continuation.resume(throwing: SendToKindleError.sendFailed("Read error: \(error.localizedDescription)"))
-                    return
-                }
+    func readResponse() throws -> String {
+        guard let input = inputStream else {
+            throw SendToKindleError.sendFailed("Input stream not available")
+        }
 
-                guard let data = data, let response = String(data: data, encoding: .utf8) else {
-                    continuation.resume(throwing: SendToKindleError.sendFailed("Invalid response"))
-                    return
-                }
+        var response = ""
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        let timeout: TimeInterval = 30
+        let startTime = Date()
 
-                // Check for SMTP error codes (4xx or 5xx)
-                let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let firstChar = trimmed.first, firstChar == "4" || firstChar == "5" {
-                    continuation.resume(throwing: SendToKindleError.sendFailed("SMTP error: \(trimmed)"))
-                    return
-                }
+        // Read until we have a complete SMTP response
+        while Date().timeIntervalSince(startTime) < timeout {
+            // Wait for data to be available
+            if !input.hasBytesAvailable {
+                Thread.sleep(forTimeInterval: 0.01)
+                continue
+            }
 
-                continuation.resume(returning: response)
+            let bytesRead = input.read(&buffer, maxLength: bufferSize)
+
+            if bytesRead < 0 {
+                throw SendToKindleError.sendFailed("Read error: \(input.streamError?.localizedDescription ?? "unknown")")
+            }
+
+            if bytesRead == 0 {
+                continue
+            }
+
+            guard let chunk = String(bytes: buffer[0..<bytesRead], encoding: .utf8) else {
+                throw SendToKindleError.sendFailed("Invalid UTF-8 response")
+            }
+
+            response += chunk
+
+            // SMTP responses end with \r\n and multi-line responses have a space after the code on the last line
+            // Single line: "220 smtp.gmail.com ready\r\n"
+            // Multi-line: "250-SIZE 35882577\r\n250 8BITMIME\r\n"
+            if response.hasSuffix("\r\n") {
+                let lines = response.components(separatedBy: "\r\n").filter { !$0.isEmpty }
+                if let lastLine = lines.last {
+                    // Check if this is the final line (code followed by space, not dash)
+                    if lastLine.count >= 4 {
+                        let index = lastLine.index(lastLine.startIndex, offsetBy: 3)
+                        let separator = lastLine[index]
+                        if separator == " " || separator == "\r" || separator == "\n" {
+                            break // Complete response
+                        }
+                    } else if lastLine.count >= 3 {
+                        break // Short response like "250"
+                    }
+                }
             }
         }
+
+        if response.isEmpty {
+            throw SendToKindleError.sendFailed("No response received (timeout)")
+        }
+
+        // Check for SMTP error codes (4xx or 5xx)
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let firstChar = trimmed.first, firstChar == "4" || firstChar == "5" {
+            throw SendToKindleError.sendFailed("SMTP error: \(trimmed)")
+        }
+
+        kindleLogger.debug("SMTP response: \(trimmed)")
+        return response
+    }
+
+    func close() {
+        inputStream?.close()
+        outputStream?.close()
+        inputStream = nil
+        outputStream = nil
+    }
+
+    deinit {
+        close()
     }
 }
 
