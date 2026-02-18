@@ -82,6 +82,19 @@ struct FormatStyle {
         .foregroundColor(color)
         .clipShape(Capsule())
     }
+
+    /// A compact badge view showing just the format text (no icon)
+    /// Use this in space-constrained layouts like grid items
+    @ViewBuilder
+    func compactBadge() -> some View {
+        Text(format.uppercased())
+            .font(.system(size: 9, weight: .semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .foregroundColor(color)
+            .clipShape(Capsule())
+    }
 }
 
 // MARK: - Convenience Extensions

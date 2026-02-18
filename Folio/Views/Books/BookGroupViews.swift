@@ -138,14 +138,16 @@ struct BookGroupGridItemView: View {
             // Format badges (showing all formats) and total file size
             HStack(spacing: 4) {
                 ForEach(group.formats, id: \.self) { format in
-                    FormatStyle(format: format).badge()
+                    FormatStyle(format: format).compactBadge()
                 }
 
-                Spacer()
+                Spacer(minLength: 4)
 
                 Text(formattedTotalSize)
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
             }
         }
         .frame(width: 150)
