@@ -40,9 +40,18 @@ struct BookGridView: View {
     @State private var showingBookDetail: Book?
     @State private var showingGroupDetail: BookGroup?
 
-    private let columns = [
-        GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 20, alignment: .top)
-    ]
+    /// Grid item size controlled by zoom level (persisted across sessions)
+    @AppStorage("gridItemMinSize") private var gridItemMinSize: Double = 150
+
+    /// Zoom step size for keyboard shortcuts
+    private static let zoomStep: Double = 25
+    private static let minZoom: Double = 100
+    private static let maxZoom: Double = 300
+
+    /// Dynamic columns based on zoom level
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: gridItemMinSize, maximum: gridItemMinSize * 1.33), spacing: 20, alignment: .top)]
+    }
 
     var body: some View {
         ScrollView {

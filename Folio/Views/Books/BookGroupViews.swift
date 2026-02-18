@@ -247,7 +247,8 @@ struct BookGroupGridItemView: View {
                     }
 
                     try? primaryBook.managedObjectContext?.save()
-                    libraryService.refresh()
+                    // Note: Removed libraryService.refresh() to prevent scroll position reset.
+                    // Core Data changes propagate automatically via @FetchRequest.
                 }
             }
         } catch {
@@ -672,7 +673,8 @@ struct BookGroupContextMenu: View {
                     }
 
                     try? primaryBook.managedObjectContext?.save()
-                    libraryService.refresh()
+                    // Note: Removed libraryService.refresh() to prevent scroll position reset.
+                    // Core Data changes propagate automatically via @FetchRequest.
                 }
             }
         } catch {
@@ -1066,7 +1068,8 @@ struct BookGroupDetailView: View {
                     }
 
                     try? primaryBook.managedObjectContext?.save()
-                    libraryService.refresh()
+                    // Note: Removed libraryService.refresh() to prevent scroll position reset.
+                    // Core Data changes propagate automatically via @FetchRequest.
                 }
             } else {
                 await MainActor.run {

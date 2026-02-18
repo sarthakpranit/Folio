@@ -14,6 +14,14 @@ struct FolioApp: App {
     let persistenceController = PersistenceController.shared
     @StateObject private var libraryService = LibraryService.shared
 
+    /// Grid item size for zoom (shared via AppStorage)
+    @AppStorage("gridItemMinSize") private var gridItemMinSize: Double = 150
+
+    /// Zoom constants
+    private static let zoomStep: Double = 25
+    private static let minZoom: Double = 100
+    private static let maxZoom: Double = 300
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -36,7 +44,42 @@ struct FolioApp: App {
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
             }
+
+            // View menu - Zoom controls
+            CommandGroup(after: .toolbar) {
+                Button("Zoom In") {
+                    zoomIn()
+                }
+                .keyboardShortcut("+", modifiers: .command)
+
+                Button("Zoom Out") {
+                    zoomOut()
+                }
+                .keyboardShortcut("-", modifiers: .command)
+
+                Button("Reset Zoom") {
+                    resetZoom()
+                }
+                .keyboardShortcut("0", modifiers: .command)
+
+                Divider()
+            }
         }
+    }
+
+    /// Increase grid item size (zoom in)
+    private func zoomIn() {
+        gridItemMinSize = min(Self.maxZoom, gridItemMinSize + Self.zoomStep)
+    }
+
+    /// Decrease grid item size (zoom out)
+    private func zoomOut() {
+        gridItemMinSize = max(Self.minZoom, gridItemMinSize - Self.zoomStep)
+    }
+
+    /// Reset zoom to default
+    private func resetZoom() {
+        gridItemMinSize = 150
     }
 
     /// Fetch metadata for books that don't have cover images or complete metadata

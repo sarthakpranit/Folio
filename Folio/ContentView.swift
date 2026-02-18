@@ -44,7 +44,6 @@ struct ContentView: View {
     @State private var isDropTargeted = false
     @State private var showingImportResult = false
     @State private var importResult: ImportResult?
-    @State private var refreshID = UUID()
 
     // View mode and Sorting
     @State private var viewMode: LibraryViewMode = .grid
@@ -461,10 +460,10 @@ struct ContentView: View {
             ToastView(manager: ToastNotificationManager.shared)
         }
         .navigationTitle(navigationTitle)
-        .id(refreshID)
-        .onReceive(NotificationCenter.default.publisher(for: .NSManagedObjectContextDidSave, object: viewContext)) { _ in
-            refreshID = UUID()
-        }
+        // Note: Removed .id(refreshID) and NSManagedObjectContextDidSave observer
+        // that was forcing full view recreation on every Core Data save.
+        // @FetchRequest already observes Core Data changes automatically,
+        // and the forced refresh was causing scroll position reset.
         // Cmd+A to select all books
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
