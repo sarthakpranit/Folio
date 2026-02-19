@@ -171,6 +171,7 @@ class LibraryService: ObservableObject {
     func deleteBook(_ book: Book, deleteFile: Bool = false) throws {
         try repository.delete(book, deleteFile: deleteFile)
         loadBooks()
+        objectWillChange.send()
         print("Deleted book: \(book.title ?? "Unknown")")
     }
 
@@ -178,6 +179,7 @@ class LibraryService: ObservableObject {
     func deleteBooks(_ booksToDelete: [Book], deleteFiles: Bool = false) throws {
         try repository.deleteMultiple(booksToDelete, deleteFiles: deleteFiles)
         loadBooks()
+        objectWillChange.send()
     }
 
     // MARK: - Update Book

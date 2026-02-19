@@ -389,8 +389,7 @@ struct ContentView: View {
         NavigationSplitView {
             SidebarView(
                 libraryService: libraryService,
-                selection: $selectedSidebarItem,
-                kindleDevices: Array(kindleDevices)
+                selection: $selectedSidebarItem
             )
         } detail: {
             detailView

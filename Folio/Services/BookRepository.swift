@@ -133,18 +133,39 @@ class BookRepository {
             try? FileManager.default.removeItem(at: fileURL)
         }
 
+        // Refresh related Kindle devices so their syncedBooks count updates in UI
+        if let kindleDevices = book.kindleDevices as? Set<KindleDevice> {
+            for device in kindleDevices {
+                viewContext.refresh(device, mergeChanges: true)
+            }
+        }
+
         viewContext.delete(book)
         try viewContext.save()
     }
 
     /// Delete multiple books
     func deleteMultiple(_ books: [Book], deleteFiles: Bool = false) throws {
+        // Collect all affected Kindle devices before deletion
+        var affectedDevices = Set<KindleDevice>()
+        for book in books {
+            if let kindleDevices = book.kindleDevices as? Set<KindleDevice> {
+                affectedDevices.formUnion(kindleDevices)
+            }
+        }
+
         for book in books {
             if deleteFiles, let fileURL = book.fileURL {
                 try? FileManager.default.removeItem(at: fileURL)
             }
             viewContext.delete(book)
         }
+
+        // Refresh affected Kindle devices so their syncedBooks count updates in UI
+        for device in affectedDevices {
+            viewContext.refresh(device, mergeChanges: true)
+        }
+
         try viewContext.save()
     }
 

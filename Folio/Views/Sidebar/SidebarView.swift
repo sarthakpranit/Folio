@@ -15,17 +15,23 @@
 // Usage:
 //   SidebarView(
 //       libraryService: libraryService,
-//       selection: $selectedSidebarItem,
-//       kindleDevices: Array(kindleDevices)
+//       selection: $selectedSidebarItem
 //   )
 //
 
 import SwiftUI
+import CoreData
 
 struct SidebarView: View {
     @ObservedObject var libraryService: LibraryService
     @Binding var selection: SidebarItem?
-    var kindleDevices: [KindleDevice]
+
+    // Fetch Kindle devices directly to observe relationship changes
+    @FetchRequest(
+        entity: KindleDevice.entity(),
+        sortDescriptors: [NSSortDescriptor(keyPath: \KindleDevice.name, ascending: true)],
+        animation: .default
+    ) private var kindleDevices: FetchedResults<KindleDevice>
 
     var body: some View {
         List(selection: $selection) {
@@ -101,7 +107,6 @@ struct SidebarView: View {
 #Preview {
     SidebarView(
         libraryService: LibraryService.shared,
-        selection: .constant(.allBooks),
-        kindleDevices: []
+        selection: .constant(.allBooks)
     )
 }
