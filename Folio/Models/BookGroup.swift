@@ -36,9 +36,10 @@ struct BookGroup: Identifiable {
         books.reduce(0) { $0 + $1.fileSize }
     }
 
-    /// Best format for Kindle transfer (MOBI > AZW3 > EPUB > PDF)
+    /// Best format for Kindle transfer via Send to Kindle
+    /// Amazon discontinued MOBI support in 2022. EPUB is now preferred (Amazon converts to AZW).
     var preferredForKindle: Book? {
-        let kindlePriority = ["mobi", "azw3", "epub", "pdf"]
+        let kindlePriority = ["epub", "azw3", "pdf", "txt"]
         for format in kindlePriority {
             if let book = books.first(where: { $0.format?.lowercased() == format }) {
                 return book

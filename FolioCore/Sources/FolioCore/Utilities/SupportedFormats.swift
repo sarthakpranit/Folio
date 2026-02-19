@@ -66,13 +66,15 @@ public enum EbookFormat: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Supported by Kindle devices
+    /// Supported by Kindle devices via Send to Kindle
+    /// Note: Amazon discontinued MOBI support in 2022. EPUB, AZW3, and KFX are the supported formats.
+    /// PDF and TXT are also supported but may have formatting limitations.
     public var kindleCompatible: Bool {
         switch self {
-        case .mobi, .azw3, .pdf, .txt:
+        case .epub, .azw3:
             return true
-        case .epub: // Amazon converts EPUB sent via email
-            return true
+        case .pdf, .txt:
+            return true // Supported but with limitations
         default:
             return false
         }

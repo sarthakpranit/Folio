@@ -522,6 +522,15 @@ struct SendToKindleView: View {
     @State private var sendResult: String?
     @State private var sendSuccess = false
 
+    /// Checks if the book's format is compatible with Kindle Send to Kindle service
+    private var isKindleCompatible: Bool {
+        guard let formatString = book.format,
+              let format = EbookFormat(rawValue: formatString.lowercased()) else {
+            return false
+        }
+        return format.kindleCompatible
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -565,9 +574,17 @@ struct SendToKindleView: View {
                             .font(.headline)
                             .lineLimit(2)
 
-                        Text(book.format?.uppercased() ?? "")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        HStack(spacing: 4) {
+                            Text(book.format?.uppercased() ?? "")
+                                .font(.caption)
+                                .foregroundColor(isKindleCompatible ? .secondary : .orange)
+
+                            if !isKindleCompatible {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        }
 
                         Text(ByteCountFormatter.string(fromByteCount: book.fileSize, countStyle: .file))
                             .font(.caption)
@@ -579,6 +596,26 @@ struct SendToKindleView: View {
                 .padding()
                 .background(Color.secondary.opacity(0.1))
                 .cornerRadius(8)
+
+                // Format compatibility warning
+                if !isKindleCompatible {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Incompatible Format")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Text("Kindle no longer supports \(book.format?.uppercased() ?? "this format"). Supported formats: EPUB, AZW3, KFX, PDF, TXT.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.1))
+                    .cornerRadius(8)
+                }
 
                 // Device selection
                 if kindleDevices.isEmpty {
@@ -637,7 +674,7 @@ struct SendToKindleView: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selectedDevice == nil || isSending)
+                .disabled(selectedDevice == nil || isSending || !isKindleCompatible)
             }
             .padding()
         }

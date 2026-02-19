@@ -358,6 +358,18 @@ struct BookGroupContextMenuContent: View {
     }
 
     private func sendToKindle(book: Book, device: KindleDevice) async {
+        // Validate format compatibility first
+        if let formatString = book.format,
+           let format = EbookFormat(rawValue: formatString.lowercased()),
+           !format.kindleCompatible {
+            showNotification(
+                title: "Incompatible Format",
+                message: "Kindle no longer supports \(formatString.uppercased()) files. Supported formats: EPUB, AZW3, PDF, TXT.",
+                isError: true
+            )
+            return
+        }
+
         guard let kindleEmail = device.email else {
             showNotification(title: "No Kindle Email", message: "Please configure an email for \(device.name ?? "this Kindle").", isError: true)
             return
@@ -542,6 +554,18 @@ struct BookGroupContextMenu: View {
     }
 
     private func sendToKindle(book: Book, device: KindleDevice) async {
+        // Validate format compatibility first
+        if let formatString = book.format,
+           let format = EbookFormat(rawValue: formatString.lowercased()),
+           !format.kindleCompatible {
+            showNotification(
+                title: "Incompatible Format",
+                message: "Kindle no longer supports \(formatString.uppercased()) files. Supported formats: EPUB, AZW3, PDF, TXT.",
+                isError: true
+            )
+            return
+        }
+
         guard let kindleEmail = device.email else {
             showNotification(
                 title: "No Kindle Email",
