@@ -38,10 +38,17 @@ final class FolioCoreTests: XCTestCase {
     }
 
     func testKindleCompatibility() {
-        XCTAssertTrue(EbookFormat.mobi.kindleCompatible)
+        // Amazon discontinued MOBI support via Send to Kindle in 2022
+        XCTAssertFalse(EbookFormat.mobi.kindleCompatible)
+        // Supported formats for Send to Kindle
         XCTAssertTrue(EbookFormat.azw3.kindleCompatible)
-        XCTAssertTrue(EbookFormat.epub.kindleCompatible) // Amazon converts
+        XCTAssertTrue(EbookFormat.epub.kindleCompatible) // Amazon converts to AZW
+        XCTAssertTrue(EbookFormat.pdf.kindleCompatible)
+        XCTAssertTrue(EbookFormat.txt.kindleCompatible)
+        // Unsupported formats
         XCTAssertFalse(EbookFormat.cbz.kindleCompatible)
+        XCTAssertFalse(EbookFormat.cbr.kindleCompatible)
+        XCTAssertFalse(EbookFormat.fb2.kindleCompatible)
     }
 
     // MARK: - String Extension Tests
