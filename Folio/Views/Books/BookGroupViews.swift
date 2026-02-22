@@ -34,6 +34,7 @@ struct BookGroupGridItemView: View {
     let kindleDevices: [KindleDevice]
     let viewContext: NSManagedObjectContext
     @Binding var showingDetailFor: BookGroup?
+    @Binding var showingEditFor: BookGroup?
     @State private var isLoadingMetadata = false
 
     /// The primary book used for display (best metadata)
@@ -158,7 +159,8 @@ struct BookGroupGridItemView: View {
                 kindleDevices: kindleDevices,
                 viewContext: viewContext,
                 isLoadingMetadata: $isLoadingMetadata,
-                showingDetailFor: $showingDetailFor
+                showingDetailFor: $showingDetailFor,
+                showingEditFor: $showingEditFor
             )
         }
         .task {
@@ -278,6 +280,7 @@ struct BookGroupContextMenuContent: View {
     let kindleDevices: [KindleDevice]
     let viewContext: NSManagedObjectContext
     @Binding var showingDetailFor: BookGroup?
+    @Binding var showingEditFor: BookGroup?
 
     private var primaryBook: Book { group.primaryBook }
 
@@ -318,6 +321,22 @@ struct BookGroupContextMenuContent: View {
         Button("Get Info...") {
             showingDetailFor = group
         }
+
+        Button("Edit Metadata...") {
+            showingEditFor = group
+        }
+
+        // Convert to different format (requires Calibre)
+        Menu("Convert to...") {
+            let currentFormat = group.primaryBook.format?.lowercased() ?? ""
+            ForEach(["epub", "mobi", "pdf", "azw3"], id: \.self) { format in
+                Button(format.uppercased()) {
+                    Task { await convertBook(to: format) }
+                }
+                .disabled(currentFormat == format)
+            }
+        }
+        .disabled(!CalibreConversionService.shared.isCalibreAvailable)
 
         Divider()
 
@@ -407,6 +426,34 @@ struct BookGroupContextMenuContent: View {
             showNotification(title: "Send Failed", message: error.localizedDescription, isError: true)
         }
     }
+
+    private func convertBook(to format: String) async {
+        guard let (accessibleURL, didStartAccessing) = BookFileHelper.resolveSecurityScopedURL(for: group.primaryBook) else {
+            showNotification(title: "Access Denied", message: "Could not access the book file. Try re-importing.", isError: true)
+            return
+        }
+
+        defer {
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        showNotification(title: "Converting", message: "Converting to \(format.uppercased())...")
+
+        do {
+            let outputURL = try await CalibreConversionService.shared.convert(accessibleURL, to: format)
+            let result = await libraryService.importBooks(from: [outputURL])
+
+            if result.imported > 0 {
+                showNotification(title: "Converted", message: "Created \(format.uppercased()) version")
+            } else {
+                showNotification(title: "Import Failed", message: result.errors.first ?? "Unknown error", isError: true)
+            }
+        } catch {
+            showNotification(title: "Conversion Failed", message: error.localizedDescription, isError: true)
+        }
+    }
 }
 
 // MARK: - Book Group Context Menu
@@ -419,6 +466,7 @@ struct BookGroupContextMenu: View {
     let viewContext: NSManagedObjectContext
     @Binding var isLoadingMetadata: Bool
     @Binding var showingDetailFor: BookGroup?
+    @Binding var showingEditFor: BookGroup?
 
     private var primaryBook: Book { group.primaryBook }
 
@@ -464,12 +512,28 @@ struct BookGroupContextMenu: View {
             showingDetailFor = group
         }
 
+        Button("Edit Metadata...") {
+            showingEditFor = group
+        }
+
         Button("Fetch Metadata") {
             Task {
                 await fetchMetadata()
             }
         }
         .disabled(isLoadingMetadata)
+
+        // Convert to different format (requires Calibre)
+        Menu("Convert to...") {
+            let currentFormat = group.primaryBook.format?.lowercased() ?? ""
+            ForEach(["epub", "mobi", "pdf", "azw3"], id: \.self) { format in
+                Button(format.uppercased()) {
+                    Task { await convertBook(to: format) }
+                }
+                .disabled(currentFormat == format)
+            }
+        }
+        .disabled(!CalibreConversionService.shared.isCalibreAvailable)
 
         Divider()
 
@@ -703,6 +767,42 @@ struct BookGroupContextMenu: View {
             }
         } catch {
             print("Failed to fetch metadata: \(error)")
+        }
+    }
+
+    private func convertBook(to format: String) async {
+        guard let sourceURL = group.primaryBook.fileURL else {
+            showNotification(title: "Error", message: "Book file not found", isError: true)
+            return
+        }
+
+        // Access security-scoped resource
+        guard let (accessibleURL, didStartAccessing) = BookFileHelper.resolveSecurityScopedURL(for: group.primaryBook) else {
+            showNotification(title: "Access Denied", message: "Could not access the book file. Try re-importing.", isError: true)
+            return
+        }
+
+        defer {
+            if didStartAccessing {
+                accessibleURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        showNotification(title: "Converting", message: "Converting to \(format.uppercased())...")
+
+        do {
+            let outputURL = try await CalibreConversionService.shared.convert(accessibleURL, to: format)
+
+            // Import the converted file into the library
+            let result = await libraryService.importBooks(from: [outputURL])
+
+            if result.imported > 0 {
+                showNotification(title: "Converted", message: "Created \(format.uppercased()) version")
+            } else {
+                showNotification(title: "Import Failed", message: result.errors.first ?? "Unknown error", isError: true)
+            }
+        } catch {
+            showNotification(title: "Conversion Failed", message: error.localizedDescription, isError: true)
         }
     }
 }

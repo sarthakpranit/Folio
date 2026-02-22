@@ -39,6 +39,7 @@ struct BookGridView: View {
     let viewContext: NSManagedObjectContext
     @State private var showingBookDetail: Book?
     @State private var showingGroupDetail: BookGroup?
+    @State private var showingEditFor: BookGroup?
 
     /// Grid item size controlled by zoom level (persisted across sessions)
     @AppStorage("gridItemMinSize") private var gridItemMinSize: Double = 150
@@ -65,7 +66,8 @@ struct BookGridView: View {
                         libraryService: libraryService,
                         kindleDevices: kindleDevices,
                         viewContext: viewContext,
-                        showingDetailFor: $showingGroupDetail
+                        showingDetailFor: $showingGroupDetail,
+                        showingEditFor: $showingEditFor
                     )
                     .onTapGesture(count: 2) {
                         if !isMultiSelectMode {
@@ -85,6 +87,9 @@ struct BookGridView: View {
         }
         .sheet(item: $showingGroupDetail) { group in
             BookGroupDetailView(group: group, libraryService: libraryService, viewContext: viewContext)
+        }
+        .sheet(item: $showingEditFor) { group in
+            BookMetadataEditView(book: group.primaryBook, libraryService: libraryService, viewContext: viewContext)
         }
     }
 
