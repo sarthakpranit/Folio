@@ -39,47 +39,58 @@ struct BookTableView: View {
 
     @State private var selection: Set<String> = []
     @State private var showingGroupDetail: BookGroup?
+    @State private var showingEditFor: BookGroup?
 
     var body: some View {
+        tableContent
+            .onChange(of: selection) { newSelection in
+                syncSelection(newSelection)
+            }
+            .sheet(item: $showingGroupDetail) { group in
+                BookGroupDetailView(group: group, libraryService: libraryService, viewContext: viewContext)
+            }
+    }
+
+    private var tableContent: some View {
         Table(bookGroups, selection: $selection) {
-            TableColumn("Title") { group in
+            TableColumn("Title") { (group: BookGroup) in
                 Text(group.primaryBook.title ?? "Unknown")
                     .lineLimit(1)
             }
             .width(min: 150, ideal: 250)
 
-            TableColumn("Author") { group in
+            TableColumn("Author") { (group: BookGroup) in
                 Text(authorText(for: group))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
             .width(min: 100, ideal: 150)
 
-            TableColumn("Year") { group in
+            TableColumn("Year") { (group: BookGroup) in
                 Text(yearText(for: group))
                     .foregroundColor(.secondary)
             }
             .width(min: 50, ideal: 60)
 
-            TableColumn("Date Added") { group in
+            TableColumn("Date Added") { (group: BookGroup) in
                 Text(dateAddedText(for: group))
                     .foregroundColor(.secondary)
             }
             .width(min: 80, ideal: 100)
 
-            TableColumn("Formats") { group in
+            TableColumn("Formats") { (group: BookGroup) in
                 formatsView(for: group)
             }
             .width(min: 80, ideal: 120)
 
-            TableColumn("Size") { group in
-                Text(ByteCountFormatter.string(fromByteCount: group.totalSize, countStyle: .file))
+            TableColumn("Size") { (group: BookGroup) in
+                Text(sizeText(for: group))
                     .foregroundColor(.secondary)
                     .monospacedDigit()
             }
             .width(min: 60, ideal: 80)
 
-            TableColumn("Tags") { group in
+            TableColumn("Tags") { (group: BookGroup) in
                 Text(tagsText(for: group))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -87,39 +98,47 @@ struct BookTableView: View {
             .width(min: 80, ideal: 150)
         }
         .contextMenu(forSelectionType: String.self) { selectedIds in
-            if let groupId = selectedIds.first,
-               let group = bookGroups.first(where: { $0.id == groupId }) {
-                BookGroupContextMenuContent(
-                    group: group,
-                    libraryService: libraryService,
-                    kindleDevices: kindleDevices,
-                    viewContext: viewContext,
-                    showingDetailFor: $showingGroupDetail
-                )
-            }
+            contextMenuContent(for: selectedIds)
         } primaryAction: { selectedIds in
-            // Double-click action - open book
-            if let groupId = selectedIds.first,
-               let group = bookGroups.first(where: { $0.id == groupId }),
-               let book = group.preferredForReading {
-                BookFileHelper.openInAppleBooks(book)
-            }
+            handlePrimaryAction(selectedIds)
         }
-        .onChange(of: selection) { newSelection in
-            // Sync table selection with app selection state
-            selectedBooks.removeAll()
-            for groupId in newSelection {
-                if let group = bookGroups.first(where: { $0.id == groupId }) {
-                    for book in group.books {
-                        selectedBooks.insert(book.objectID)
-                    }
+    }
+
+    // MARK: - Actions
+
+    @ViewBuilder
+    private func contextMenuContent(for selectedIds: Set<String>) -> some View {
+        if let groupId = selectedIds.first,
+           let group = bookGroups.first(where: { $0.id == groupId }) {
+            BookGroupContextMenuContent(
+                group: group,
+                libraryService: libraryService,
+                kindleDevices: kindleDevices,
+                viewContext: viewContext,
+                showingDetailFor: $showingGroupDetail,
+                showingEditFor: $showingEditFor
+            )
+        }
+    }
+
+    private func handlePrimaryAction(_ selectedIds: Set<String>) {
+        if let groupId = selectedIds.first,
+           let group = bookGroups.first(where: { $0.id == groupId }),
+           let book = group.preferredForReading {
+            BookFileHelper.openInAppleBooks(book)
+        }
+    }
+
+    private func syncSelection(_ newSelection: Set<String>) {
+        selectedBooks.removeAll()
+        for groupId in newSelection {
+            if let group = bookGroups.first(where: { $0.id == groupId }) {
+                for book in group.books {
+                    selectedBooks.insert(book.objectID)
                 }
             }
-            isMultiSelectMode = !selectedBooks.isEmpty
         }
-        .sheet(item: $showingGroupDetail) { group in
-            BookGroupDetailView(group: group, libraryService: libraryService, viewContext: viewContext)
-        }
+        isMultiSelectMode = !selectedBooks.isEmpty
     }
 
     // MARK: - Helper Functions
@@ -148,6 +167,10 @@ struct BookTableView: View {
             return formatter.string(from: date)
         }
         return "—"
+    }
+
+    private func sizeText(for group: BookGroup) -> String {
+        ByteCountFormatter.string(fromByteCount: group.totalSize, countStyle: .file)
     }
 
     private func tagsText(for group: BookGroup) -> String {
