@@ -27,6 +27,11 @@ struct FolioApp: App {
             ContentView()
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
         }
+        // Settings window (Cmd+,)
+        Settings {
+            PreferencesView()
+        }
+
         .commands {
             // File menu additions
             CommandGroup(after: .newItem) {
