@@ -25,6 +25,36 @@
 import Foundation
 import CoreData
 import Combine
+import SwiftUI
+
+/// Strategy for handling duplicate books during import
+enum DuplicateStrategy: String, CaseIterable, Identifiable {
+    case skip = "skip"
+    case replace = "replace"
+    case keepBoth = "keepBoth"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .skip: return "Skip"
+        case .replace: return "Replace"
+        case .keepBoth: return "Keep Both"
+        }
+    }
+}
+
+/// Error for import-specific issues
+enum ImportError: LocalizedError {
+    case duplicateSkipped(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .duplicateSkipped(let title):
+            return "Duplicate skipped: \(title)"
+        }
+    }
+}
 
 /// Service for importing ebooks into the library
 @MainActor
@@ -32,12 +62,20 @@ class ImportService: ObservableObject {
     private let repository: BookRepository
     private let parser: FilenameParser
 
+    /// User's preferred duplicate handling strategy
+    @AppStorage("duplicateStrategy") private var duplicateStrategyRaw: String = "skip"
+
+    private var duplicateStrategy: DuplicateStrategy {
+        DuplicateStrategy(rawValue: duplicateStrategyRaw) ?? .skip
+    }
+
     // Progress tracking
     @Published private(set) var isImporting: Bool = false
     @Published private(set) var importProgress: Double = 0
     @Published private(set) var importTotal: Int = 0
     @Published private(set) var importCurrent: Int = 0
     @Published private(set) var importCurrentBookName: String = ""
+    @Published private(set) var duplicatesSkipped: Int = 0
 
     init(repository: BookRepository, parser: FilenameParser) {
         self.repository = repository
@@ -52,6 +90,7 @@ class ImportService: ObservableObject {
         importProgress = 0
         importCurrent = 0
         importCurrentBookName = "Scanning files..."
+        duplicatesSkipped = 0
 
         defer {
             isImporting = false
@@ -61,6 +100,7 @@ class ImportService: ObservableObject {
 
         var imported = 0
         var failed = 0
+        var skipped = 0
         var errors: [String] = []
 
         // Collect all files to import
@@ -103,6 +143,10 @@ class ImportService: ObservableObject {
 
                 try importSingleFile(fileURL)
                 imported += 1
+            } catch let error as ImportError {
+                // Handle duplicate skipped separately from failures
+                skipped += 1
+                duplicatesSkipped = skipped
             } catch {
                 failed += 1
                 errors.append("\(fileURL.lastPathComponent): \(error.localizedDescription)")
@@ -113,14 +157,36 @@ class ImportService: ObservableObject {
         }
 
         importProgress = 1.0
-        return ImportResult(imported: imported, failed: failed, errors: errors)
+        return ImportResult(imported: imported, failed: failed, skipped: skipped, errors: errors)
     }
 
-    /// Import a single file
+    /// Import a single file with duplicate detection
     private func importSingleFile(_ fileURL: URL) throws {
-        let parsed = parser.parse(fileURL.lastPathComponent)
-        let sortTitle = repository.generateSortTitle(parsed.title)
+        let filename = fileURL.lastPathComponent
+        let parsed = parser.parse(filename)
 
+        // Check for duplicates
+        if let existingBook = repository.findDuplicate(
+            filename: filename,
+            title: parsed.title,
+            author: parsed.author
+        ) {
+            switch duplicateStrategy {
+            case .skip:
+                throw ImportError.duplicateSkipped(existingBook.title ?? filename)
+
+            case .replace:
+                // Delete existing book (keep file on disk, just remove from library)
+                try repository.delete(existingBook, deleteFile: false)
+                // Continue to add the new file
+
+            case .keepBoth:
+                // Do nothing, continue to add as new entry
+                break
+            }
+        }
+
+        let sortTitle = repository.generateSortTitle(parsed.title)
         try repository.add(
             from: fileURL,
             title: parsed.title,

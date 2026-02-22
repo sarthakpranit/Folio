@@ -301,14 +301,33 @@ class LibraryService: ObservableObject {
 struct ImportResult {
     let imported: Int
     let failed: Int
+    let skipped: Int
     let errors: [String]
 
+    init(imported: Int, failed: Int, skipped: Int = 0, errors: [String]) {
+        self.imported = imported
+        self.failed = failed
+        self.skipped = skipped
+        self.errors = errors
+    }
+
     var summary: String {
-        if failed == 0 {
-            return "Successfully imported \(imported) book(s)"
-        } else {
-            return "Imported \(imported) book(s), \(failed) failed"
+        var parts: [String] = []
+
+        if imported > 0 {
+            parts.append("Imported \(imported)")
         }
+        if skipped > 0 {
+            parts.append("\(skipped) skipped (duplicates)")
+        }
+        if failed > 0 {
+            parts.append("\(failed) failed")
+        }
+
+        if parts.isEmpty {
+            return "No books imported"
+        }
+        return parts.joined(separator: ", ")
     }
 }
 

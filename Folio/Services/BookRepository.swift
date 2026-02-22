@@ -68,6 +68,44 @@ class BookRepository {
         return try viewContext.fetch(request)
     }
 
+    // MARK: - Duplicate Detection
+
+    /// Find a duplicate book by filename or title+author match
+    /// - Parameters:
+    ///   - filename: The filename to check
+    ///   - title: The parsed title
+    ///   - author: Optional parsed author name
+    /// - Returns: Existing book if duplicate found, nil otherwise
+    func findDuplicate(filename: String, title: String, author: String?) -> Book? {
+        // Check 1: Same filename already in library
+        let filenameRequest = Book.fetchRequest()
+        filenameRequest.predicate = NSPredicate(format: "fileURLString CONTAINS[c] %@", filename)
+        filenameRequest.fetchLimit = 1
+
+        if let match = try? viewContext.fetch(filenameRequest).first {
+            return match
+        }
+
+        // Check 2: Same sortTitle + author match
+        let normalizedTitle = generateSortTitle(title)
+        var predicates: [NSPredicate] = [
+            NSPredicate(format: "sortTitle ==[c] %@", normalizedTitle)
+        ]
+
+        // If author is provided, add it to the predicate
+        if let author = author, !author.isEmpty {
+            // Match on last name (most common identifier)
+            let lastName = author.components(separatedBy: " ").last ?? author
+            predicates.append(NSPredicate(format: "ANY authors.name CONTAINS[c] %@", lastName))
+        }
+
+        let titleRequest = Book.fetchRequest()
+        titleRequest.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+        titleRequest.fetchLimit = 1
+
+        return try? viewContext.fetch(titleRequest).first
+    }
+
     // MARK: - Add Book
 
     /// Add a single book to the repository
