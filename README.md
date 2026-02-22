@@ -1,5 +1,7 @@
 # Folio
 
+![Folio - The Beautiful Ebook Library for Mac](assets/folio-screenshot.png)
+
 **The Beautiful Ebook Library for Mac**
 
 Manage your ebooks with a gorgeous interface and transfer wirelessly to your devices. No cables, no complexity.
