@@ -99,6 +99,63 @@ Have the same book in EPUB and MOBI? Folio groups them as one item, showing all 
 
 ---
 
+## Architecture
+
+Folio is built as a **4-layer cake** where data flows strictly downward:
+
+```
+┌─────────────────────────────────────────────┐
+│  VIEWS (what users see)                     │  SwiftUI — grid, table, sidebar
+├─────────────────────────────────────────────┤
+│  SERVICES (what coordinates things)         │  LibraryService — the "brain"
+├─────────────────────────────────────────────┤
+│  REPOSITORIES (what talks to the database)  │  BookRepository — CRUD on books
+├─────────────────────────────────────────────┤
+│  CORE DATA (the database)                   │  6 entities: Book, Author, Series...
+└─────────────────────────────────────────────┘
+```
+
+### Two Modules
+
+- **`Folio/`** — the macOS app (SwiftUI views, state management, UI models)
+- **`FolioCore/`** — a Swift Package with **zero UI code** (HTTP server, metadata APIs, Kindle email, format conversion, Bonjour). An iOS app can reuse all of this.
+
+### The Key Abstraction: BookGroup
+
+Users don't see files — they see *books*. If you have `Dune.epub` and `Dune.mobi`, Folio groups them into **one BookGroup** with two format badges. Grouping happens by ISBN first, falling back to normalized title. Every UI surface works with BookGroups, not raw Book entities.
+
+### Core UX Loop
+
+```
+User drops files → ImportService saves to Core Data → BookGroupingService groups them
+→ Grid/Table displays BookGroups → .task modifier auto-fetches metadata → Cover appears
+```
+
+### Key Files
+
+| File | What It Controls |
+|------|-----------------|
+| `ContentView.swift` | Main layout — sidebar + content, toolbar, all state |
+| `BookGroupViews.swift` | How books look in the grid — covers, badges, context menus |
+| `BookTableView.swift` | Table view with sortable column headers |
+| `BookGroup.swift` | How files become visual "books," format priority |
+| `SortOption.swift` | Sort options and their default directions |
+| `LibraryService.swift` | Facade — one door to all business logic |
+| `BookRepository.swift` | All Core Data operations |
+| `FormatStyle.swift` | Color gradients and icons per format |
+
+### Dependencies (only 3)
+
+| Dependency | Purpose |
+|-----------|---------|
+| [Swifter](https://github.com/httpswift/swifter) | HTTP server for WiFi transfer |
+| [Kingfisher](https://github.com/onevcat/Kingfisher) | Image caching for cover downloads |
+| [SwiftyJSON](https://github.com/SwiftyJSON/SwiftyJSON) | JSON parsing for API responses |
+
+Everything else is native Apple frameworks (Core Data, Network.framework, Core Image, SwiftUI).
+
+---
+
 ## Requirements
 
 - macOS 13.0 or later
