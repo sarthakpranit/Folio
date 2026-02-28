@@ -8,7 +8,7 @@
 //
 // Sorting Philosophy:
 // - Title: Alphabetical using sortTitle (strips "The", "A", "An")
-// - Author: Currently uses sortTitle (future: author.sortName)
+// - Author: By first author's sortName (Last, First)
 // - Date Added: Newest first by default
 // - Recently Opened: Most recent first, shows reading activity
 // - File Size: Largest first, helps find large files
@@ -36,18 +36,30 @@ enum SortOption: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Default sort direction for each option (used when first selecting the option)
+    var defaultAscending: Bool {
+        switch self {
+        case .title, .author: return true       // A→Z
+        case .dateAdded, .recentlyOpened: return false  // newest first
+        case .fileSize: return false             // largest first
+        }
+    }
+
     func sortDescriptor(ascending: Bool = true) -> NSSortDescriptor {
         switch self {
         case .title:
             return NSSortDescriptor(keyPath: \Book.sortTitle, ascending: ascending)
         case .author:
+            // Note: Core Data can't sort by to-many relationship directly.
+            // In-memory sorting in ContentView.sortBooks() handles this properly.
+            // This fallback sorts by sortTitle for fetch request contexts.
             return NSSortDescriptor(keyPath: \Book.sortTitle, ascending: ascending)
         case .dateAdded:
-            return NSSortDescriptor(keyPath: \Book.dateAdded, ascending: !ascending)
+            return NSSortDescriptor(keyPath: \Book.dateAdded, ascending: ascending)
         case .recentlyOpened:
-            return NSSortDescriptor(keyPath: \Book.lastOpened, ascending: !ascending)
+            return NSSortDescriptor(keyPath: \Book.lastOpened, ascending: ascending)
         case .fileSize:
-            return NSSortDescriptor(keyPath: \Book.fileSize, ascending: !ascending)
+            return NSSortDescriptor(keyPath: \Book.fileSize, ascending: ascending)
         }
     }
 }

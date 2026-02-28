@@ -77,9 +77,13 @@ class BookRepository {
     ///   - author: Optional parsed author name
     /// - Returns: Existing book if duplicate found, nil otherwise
     func findDuplicate(filename: String, title: String, author: String?) -> Book? {
+        // Guard against empty filename or title
+        guard !filename.isEmpty else { return nil }
+
         // Check 1: Same filename already in library
+        // fileURL is a URI attribute — use CONTAINS on the string representation
         let filenameRequest = Book.fetchRequest()
-        filenameRequest.predicate = NSPredicate(format: "fileURLString CONTAINS[c] %@", filename)
+        filenameRequest.predicate = NSPredicate(format: "fileURL CONTAINS[c] %@", filename)
         filenameRequest.fetchLimit = 1
 
         if let match = try? viewContext.fetch(filenameRequest).first {
@@ -88,6 +92,8 @@ class BookRepository {
 
         // Check 2: Same sortTitle + author match
         let normalizedTitle = generateSortTitle(title)
+        guard !normalizedTitle.isEmpty else { return nil }
+
         var predicates: [NSPredicate] = [
             NSPredicate(format: "sortTitle ==[c] %@", normalizedTitle)
         ]

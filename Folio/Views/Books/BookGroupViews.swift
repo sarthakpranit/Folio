@@ -60,7 +60,7 @@ struct BookGroupGridItemView: View {
                        let nsImage = NSImage(data: coverData) {
                         Image(nsImage: nsImage)
                             .resizable()
-                            .aspectRatio(contentMode: .fill)
+                            .aspectRatio(contentMode: .fit)
                     } else {
                         VStack(spacing: 8) {
                             if isLoadingMetadata {
@@ -113,7 +113,7 @@ struct BookGroupGridItemView: View {
                     .padding(6)
                 }
             }
-            .frame(width: 150, height: 200)
+            .aspectRatio(3.0/4.0, contentMode: .fill)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
@@ -121,12 +121,16 @@ struct BookGroupGridItemView: View {
             )
             .shadow(color: .black.opacity(0.2), radius: isSelected ? 8 : 4, y: 2)
 
-            // Title
+            // Title - fixed height reserves 2 lines for consistent row alignment
             Text(primaryBook.title ?? "Unknown")
                 .font(.subheadline)
                 .fontWeight(.medium)
                 .lineLimit(2)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.leading)
                 .foregroundColor(.primary)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .frame(height: 36)
 
             // Authors
             if let authors = primaryBook.authors as? Set<Author>, !authors.isEmpty {
@@ -151,7 +155,6 @@ struct BookGroupGridItemView: View {
                     .layoutPriority(1)
             }
         }
-        .frame(width: 150)
         .contextMenu {
             BookGroupContextMenu(
                 group: group,
@@ -184,14 +187,16 @@ struct BookGroupGridItemView: View {
         isLoadingMetadata = true
         defer { isLoadingMetadata = false }
 
+        let authorName = (primaryBook.authors as? Set<Author>)?.first?.name
+
         do {
             let metadataService = MetadataService()
-            let results = try await metadataService.fetchMetadata(title: title, author: nil)
+            let results = try await metadataService.fetchMetadata(title: title, author: authorName)
 
             if let metadata = results.first {
                 await MainActor.run {
                     // Use the metadata title (from library databases) instead of filename-parsed title
-                    if !metadata.title.isEmpty && metadata.confidence >= 0.5 {
+                    if !metadata.title.isEmpty {
                         primaryBook.title = metadata.title
                         primaryBook.sortTitle = libraryService.generateSortTitle(metadata.title)
                         // Update all books in the group with the correct title
@@ -207,6 +212,7 @@ struct BookGroupGridItemView: View {
                     if let summary = metadata.summary { primaryBook.summary = summary }
                     if let pageCount = metadata.pageCount { primaryBook.pageCount = Int32(pageCount) }
                     if let language = metadata.language { primaryBook.language = language }
+                    if let publishedDate = metadata.publishedDate { primaryBook.publishedDate = publishedDate }
 
                     // Also update ISBN on other books in group for better grouping
                     for book in group.books {
@@ -720,7 +726,7 @@ struct BookGroupContextMenu: View {
             if let metadata = results.first {
                 await MainActor.run {
                     // Use the metadata title (from library databases) instead of filename-parsed title
-                    if !metadata.title.isEmpty && metadata.confidence >= 0.5 {
+                    if !metadata.title.isEmpty {
                         for book in group.books {
                             book.title = metadata.title
                             book.sortTitle = libraryService.generateSortTitle(metadata.title)
@@ -738,6 +744,7 @@ struct BookGroupContextMenu: View {
                     if let summary = metadata.summary { primaryBook.summary = summary }
                     if let pageCount = metadata.pageCount { primaryBook.pageCount = Int32(pageCount) }
                     if let language = metadata.language { primaryBook.language = language }
+                    if let publishedDate = metadata.publishedDate { primaryBook.publishedDate = publishedDate }
 
                     // Create and link Author entities from metadata
                     if !metadata.authors.isEmpty {
@@ -1138,7 +1145,7 @@ struct BookGroupDetailView: View {
             if let metadata = results.first {
                 await MainActor.run {
                     // Use the metadata title (from library databases) instead of filename-parsed title
-                    if !metadata.title.isEmpty && metadata.confidence >= 0.5 {
+                    if !metadata.title.isEmpty {
                         for book in group.books {
                             book.title = metadata.title
                             book.sortTitle = libraryService.generateSortTitle(metadata.title)
@@ -1156,6 +1163,7 @@ struct BookGroupDetailView: View {
                     if let summary = metadata.summary { primaryBook.summary = summary }
                     if let pageCount = metadata.pageCount { primaryBook.pageCount = Int32(pageCount) }
                     if let language = metadata.language { primaryBook.language = language }
+                    if let publishedDate = metadata.publishedDate { primaryBook.publishedDate = publishedDate }
 
                     // Create and link Author entities
                     if !metadata.authors.isEmpty {

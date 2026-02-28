@@ -22,8 +22,8 @@ Calibre is powerful but overwhelming. You just want to organize your ebooks and 
 
 - 🎨 Beautiful grid-based library interface
 - 📡 WiFi transfer to any device via browser
-- 📧 Send to Kindle via email with format conversion
-- 🧠 Automatic covers and metadata from Google Books
+- 📧 Send to Kindle via email (EPUB preferred — Amazon converts to AZW)
+- 🧠 Automatic covers and metadata from Google Books & Open Library
 - 📚 Smart grouping of same book in multiple formats
 - 🔒 Private, open source, completely free
 
@@ -40,10 +40,11 @@ Calibre is powerful but overwhelming. You just want to organize your ebooks and 
 | Drag & drop import | ✅ |
 | Grid view with cover images | ✅ |
 | Sort by title, author, date added, file size | ✅ |
+| Table view with sortable column headers | ✅ |
 | Multi-select with Cmd+A support | ✅ |
 | Same book format grouping (EPUB + MOBI = 1 item) | ✅ |
 | **Metadata** | ✅ |
-| Auto-fetch from Google Books API | ✅ |
+| Auto-fetch from Google Books & Open Library APIs | ✅ |
 | Cover images, authors, series, tags | ✅ |
 | Detailed book info view | ✅ |
 | **Organization** | ✅ |
@@ -58,18 +59,27 @@ Calibre is powerful but overwhelming. You just want to organize your ebooks and 
 | Send to Kindle via email | ✅ |
 | Multiple Kindle device support | ✅ |
 | SMTP email configuration | ✅ |
-| Auto-select best format (MOBI > AZW3 > EPUB) | ✅ |
+| Auto-select best format (EPUB > AZW3 > PDF) | ✅ |
 | **Format Conversion** | ✅ |
 | Convert between EPUB, MOBI, PDF, AZW3 | ✅ |
 | Powered by Calibre ebook-convert | ✅ |
 
-### Planned (Phase 2+)
+### Implemented (Phase 2)
+
+| Feature | Status |
+|---------|--------|
+| Bonjour zero-config network discovery | ✅ |
+| QR code for easy mobile connection | ✅ |
+| Native Swift SMTP (sandbox compatible) | ✅ |
+| Keyboard zoom controls (Cmd++/−/0) | ✅ |
+
+### Planned (Future)
 
 - iOS app with sync
 - USB transfer support
-- Bonjour device discovery
 - Collections and smart folders
 - Reading progress sync
+- On-device LLM metadata enhancement
 
 ---
 

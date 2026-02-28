@@ -211,7 +211,7 @@ struct DuplicateDetectionTests {
         book.id = UUID()
         book.title = "Existing Book"
         book.sortTitle = "existing book"
-        book.fileURLString = "/path/to/MyBook.epub"
+        book.fileURL = URL(string: "file:///path/to/MyBook.epub")
         book.dateAdded = Date()
         try context.save()
 

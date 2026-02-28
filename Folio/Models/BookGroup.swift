@@ -69,6 +69,28 @@ struct BookGroup: Identifiable {
         formats.count > 1
     }
 
+    // MARK: - Sortable Properties (for Table column sorting)
+
+    /// Sortable title string for table column sorting
+    var sortableTitle: String {
+        primaryBook.sortTitle ?? primaryBook.title ?? ""
+    }
+
+    /// Sortable author string (first author's sortName)
+    var sortableAuthor: String {
+        (primaryBook.authors as? Set<Author>)?.compactMap { $0.sortName }.sorted().first ?? ""
+    }
+
+    /// Sortable date added (epoch for comparison)
+    var sortableDateAdded: Date {
+        primaryBook.dateAdded ?? Date.distantPast
+    }
+
+    /// Sortable file size
+    var sortableSize: Int64 {
+        totalSize
+    }
+
     // MARK: - Private Helpers
 
     /// Calculate metadata completeness score for a book
@@ -90,27 +112,26 @@ struct BookGroup: Identifiable {
 enum BookGroupingService {
 
     /// Group an array of books by their content identity
-    /// - Parameter books: Array of Book entities to group
-    /// - Returns: Array of BookGroup, sorted by primary book's title
+    /// - Parameter books: Array of Book entities, pre-sorted by the caller
+    /// - Returns: Array of BookGroup, preserving the input sort order
+    ///           (groups appear in the order their first book appears in the input)
     static func groupBooks(_ books: [Book]) -> [BookGroup] {
-        // Group by computed key (ISBN or normalized title)
+        // Group by computed key, preserving first-seen order
         var groups: [String: [Book]] = [:]
+        var orderedKeys: [String] = []
 
         for book in books {
             let key = groupKey(for: book)
+            if groups[key] == nil {
+                orderedKeys.append(key)
+            }
             groups[key, default: []].append(book)
         }
 
-        // Convert to BookGroup array
-        let bookGroups = groups.map { key, groupedBooks in
-            BookGroup(id: key, books: groupedBooks)
-        }
-
-        // Sort by primary book's title
-        return bookGroups.sorted { group1, group2 in
-            let title1 = group1.primaryBook.sortTitle ?? group1.primaryBook.title ?? ""
-            let title2 = group2.primaryBook.sortTitle ?? group2.primaryBook.title ?? ""
-            return title1.localizedCaseInsensitiveCompare(title2) == .orderedAscending
+        // Convert to BookGroup array in the order groups were first encountered
+        return orderedKeys.compactMap { key in
+            guard let groupedBooks = groups[key] else { return nil }
+            return BookGroup(id: key, books: groupedBooks)
         }
     }
 

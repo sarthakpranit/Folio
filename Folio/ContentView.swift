@@ -76,7 +76,6 @@ struct ContentView: View {
             result = result.filter { ($0.dateAdded ?? Date.distantPast) > thirtyDaysAgo }
         case .recentlyOpened:
             result = result.filter { $0.lastOpened != nil }
-                .sorted { ($0.lastOpened ?? .distantPast) > ($1.lastOpened ?? .distantPast) }
         case .format(let format):
             result = result.filter { $0.format == format }
         case .author(let author):
@@ -300,7 +299,7 @@ struct ContentView: View {
                         sortAscending.toggle()
                     } else {
                         currentSortOption = option
-                        sortAscending = option == .title || option == .author
+                        sortAscending = option.defaultAscending
                     }
                 } label: {
                     if currentSortOption == option {
@@ -523,6 +522,8 @@ struct ContentView: View {
                             selectedBook: $selectedBook,
                             selectedBooks: $selectedBooks,
                             isMultiSelectMode: $isMultiSelectMode,
+                            currentSortOption: $currentSortOption,
+                            sortAscending: $sortAscending,
                             libraryService: libraryService,
                             kindleDevices: Array(kindleDevices),
                             viewContext: viewContext
@@ -596,6 +597,7 @@ struct ContentView: View {
                         if let summary = metadata.summary { book.summary = summary }
                         if let pageCount = metadata.pageCount { book.pageCount = Int32(pageCount) }
                         if let language = metadata.language { book.language = language }
+                        if let publishedDate = metadata.publishedDate { book.publishedDate = publishedDate }
 
                         if let coverURL = metadata.coverImageURL {
                             book.coverImageURL = coverURL

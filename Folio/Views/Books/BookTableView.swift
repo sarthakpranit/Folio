@@ -6,22 +6,11 @@
 // Shows book metadata in columns: Title, Author, Year, Date Added, Formats, Size, Tags.
 //
 // Key Responsibilities:
-// - Display books in a native macOS Table view
+// - Display books in a native macOS Table view with sortable column headers
 // - Support multi-selection via table selection
 // - Show format badges with color coding
 // - Handle context menu and double-click actions
-//
-// Usage:
-//   BookTableView(
-//       books: displayedBooks,
-//       bookGroups: displayedBookGroups,
-//       selectedBook: $selectedBook,
-//       selectedBooks: $selectedBooks,
-//       isMultiSelectMode: $isMultiSelectMode,
-//       libraryService: libraryService,
-//       kindleDevices: Array(kindleDevices),
-//       viewContext: viewContext
-//   )
+// - Communicate sort changes back to ContentView via bindings
 //
 
 import SwiftUI
@@ -33,6 +22,8 @@ struct BookTableView: View {
     @Binding var selectedBook: Book?
     @Binding var selectedBooks: Set<NSManagedObjectID>
     @Binding var isMultiSelectMode: Bool
+    @Binding var currentSortOption: SortOption
+    @Binding var sortAscending: Bool
     let libraryService: LibraryService
     let kindleDevices: [KindleDevice]
     let viewContext: NSManagedObjectContext
@@ -40,11 +31,27 @@ struct BookTableView: View {
     @State private var selection: Set<String> = []
     @State private var showingGroupDetail: BookGroup?
     @State private var showingEditFor: BookGroup?
+    @State private var sortOrder: [KeyPathComparator<BookGroup>] = [
+        KeyPathComparator(\.sortableTitle, order: .forward)
+    ]
 
     var body: some View {
         tableContent
             .onChange(of: selection) { newSelection in
                 syncSelection(newSelection)
+            }
+            .onChange(of: sortOrder) { newOrder in
+                applySortOrder(newOrder)
+            }
+            .onAppear {
+                // Initialize sortOrder from current sort state
+                syncSortOrderFromOption()
+            }
+            .onChange(of: currentSortOption) { _ in
+                syncSortOrderFromOption()
+            }
+            .onChange(of: sortAscending) { _ in
+                syncSortOrderFromOption()
             }
             .sheet(item: $showingGroupDetail) { group in
                 BookGroupDetailView(group: group, libraryService: libraryService, viewContext: viewContext)
@@ -52,14 +59,14 @@ struct BookTableView: View {
     }
 
     private var tableContent: some View {
-        Table(bookGroups, selection: $selection) {
-            TableColumn("Title") { (group: BookGroup) in
+        Table(bookGroups, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Title", value: \.sortableTitle) { (group: BookGroup) in
                 Text(group.primaryBook.title ?? "Unknown")
                     .lineLimit(1)
             }
             .width(min: 150, ideal: 250)
 
-            TableColumn("Author") { (group: BookGroup) in
+            TableColumn("Author", value: \.sortableAuthor) { (group: BookGroup) in
                 Text(authorText(for: group))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -72,7 +79,7 @@ struct BookTableView: View {
             }
             .width(min: 50, ideal: 60)
 
-            TableColumn("Date Added") { (group: BookGroup) in
+            TableColumn("Date Added", value: \.sortableDateAdded) { (group: BookGroup) in
                 Text(dateAddedText(for: group))
                     .foregroundColor(.secondary)
             }
@@ -83,7 +90,7 @@ struct BookTableView: View {
             }
             .width(min: 80, ideal: 120)
 
-            TableColumn("Size") { (group: BookGroup) in
+            TableColumn("Size", value: \.sortableSize) { (group: BookGroup) in
                 Text(sizeText(for: group))
                     .foregroundColor(.secondary)
                     .monospacedDigit()
@@ -101,6 +108,58 @@ struct BookTableView: View {
             contextMenuContent(for: selectedIds)
         } primaryAction: { selectedIds in
             handlePrimaryAction(selectedIds)
+        }
+    }
+
+    // MARK: - Sort Synchronization
+
+    /// Map a column header click (KeyPathComparator) back to SortOption + ascending
+    private func applySortOrder(_ newOrder: [KeyPathComparator<BookGroup>]) {
+        guard let first = newOrder.first else { return }
+        let ascending = first.order == .forward
+
+        // Map keypath to SortOption
+        let newOption: SortOption
+        switch first.keyPath {
+        case \BookGroup.sortableTitle:
+            newOption = .title
+        case \BookGroup.sortableAuthor:
+            newOption = .author
+        case \BookGroup.sortableDateAdded:
+            newOption = .dateAdded
+        case \BookGroup.sortableSize:
+            newOption = .fileSize
+        default:
+            return
+        }
+
+        // Only update if actually changed (avoid feedback loop)
+        if newOption != currentSortOption || ascending != sortAscending {
+            currentSortOption = newOption
+            sortAscending = ascending
+        }
+    }
+
+    /// Sync the table's sortOrder state from ContentView's SortOption
+    private func syncSortOrderFromOption() {
+        let order: SortOrder = sortAscending ? .forward : .reverse
+
+        let comparator: KeyPathComparator<BookGroup>
+        switch currentSortOption {
+        case .title:
+            comparator = KeyPathComparator(\.sortableTitle, order: order)
+        case .author:
+            comparator = KeyPathComparator(\.sortableAuthor, order: order)
+        case .dateAdded:
+            comparator = KeyPathComparator(\.sortableDateAdded, order: order)
+        case .recentlyOpened:
+            comparator = KeyPathComparator(\.sortableDateAdded, order: order)
+        case .fileSize:
+            comparator = KeyPathComparator(\.sortableSize, order: order)
+        }
+
+        if sortOrder.first?.keyPath != comparator.keyPath || sortOrder.first?.order != comparator.order {
+            sortOrder = [comparator]
         }
     }
 
