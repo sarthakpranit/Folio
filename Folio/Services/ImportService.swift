@@ -143,7 +143,7 @@ class ImportService: ObservableObject {
 
                 try importSingleFile(fileURL)
                 imported += 1
-            } catch let error as ImportError {
+            } catch is ImportError {
                 // Handle duplicate skipped separately from failures
                 skipped += 1
                 duplicatesSkipped = skipped

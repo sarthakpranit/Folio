@@ -778,7 +778,7 @@ struct BookGroupContextMenu: View {
     }
 
     private func convertBook(to format: String) async {
-        guard let sourceURL = group.primaryBook.fileURL else {
+        guard group.primaryBook.fileURL != nil else {
             showNotification(title: "Error", message: "Book file not found", isError: true)
             return
         }

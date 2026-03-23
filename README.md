@@ -184,6 +184,18 @@ Build and run with Xcode 15+.
 
 ---
 
+## Docs
+
+- `docs/overview.md` — Project overview
+- `docs/requirements.md` — Consolidated PRD + technical requirements
+- `docs/roadmap.md` — Release roadmap and current status
+- `docs/architecture.md` — Architecture and layering
+- `docs/setup.md` — Xcode setup summary
+- `docs/session.md` — Current session log
+- `docs/archive/` — Historical documents
+
+---
+
 <p align="center">
 ⭐ Star to follow progress • Made with ❤️ for readers
 </p>
