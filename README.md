@@ -9,6 +9,7 @@ Manage your ebooks with a gorgeous interface and transfer wirelessly to your dev
 [![Status](https://img.shields.io/badge/status-Phase%201%20Complete-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey.svg)]()
+[![Hypercommit](https://img.shields.io/badge/Hypercommit-DB2475)](https://hypercommit.com/folio)
 
 ---
 
