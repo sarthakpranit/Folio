@@ -45,6 +45,7 @@ struct ContentView: View {
     @State private var isDropTargeted = false
     @State private var showingImportResult = false
     @State private var importResult: ImportResult?
+    @State private var didRunInitialLibraryScan = false
 
     // View mode and Sorting
     @State private var viewMode: LibraryViewMode = .grid
@@ -411,6 +412,11 @@ struct ContentView: View {
         .accessibilityIdentifier("librarySearchField")
         .toolbar {
             toolbarContent
+        }
+        .task {
+            guard !didRunInitialLibraryScan else { return }
+            didRunInitialLibraryScan = true
+            await libraryService.startLibraryMonitoringAndScan()
         }
         .alert("Import Complete", isPresented: $showingImportResult) {
             Button("OK", role: .cancel) {}

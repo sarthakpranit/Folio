@@ -26,7 +26,9 @@
 import Foundation
 import CoreData
 import Combine
+import SwiftUI
 import UniformTypeIdentifiers
+import OSLog
 import FolioCore
 
 /// Facade for library operations - coordinates specialized services
@@ -49,6 +51,17 @@ class LibraryService: ObservableObject {
     @Published private(set) var tags: [Tag] = []
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var error: Error?
+
+    // MARK: - Library Folder
+
+    @AppStorage("libraryFolderBookmarkData") private var libraryFolderBookmarkData: Data = Data()
+    private var libraryFolderMonitor: DispatchSourceFileSystemObject?
+    private var libraryFolderFileDescriptor: CInt = -1
+    private var libraryFolderAccessURL: URL?
+    private var scanDebounceTask: Task<Void, Never>?
+    private var isLibraryScanRunning = false
+
+    private let logger = Logger(subsystem: "com.folio", category: "LibraryScan")
 
     // Import progress (delegated from ImportService)
     var isImporting: Bool { importService.isImporting }
@@ -295,6 +308,282 @@ class LibraryService: ObservableObject {
         repository.generateSortTitle(title)
     }
 
+    // MARK: - Library Folder Scanning
+
+    func startLibraryMonitoringAndScan() async {
+        guard let folderURL = resolveLibraryFolderURL() else { return }
+        startLibraryFolderMonitoring(for: folderURL)
+        _ = await scanLibraryFolder(reason: "App Launch", showToast: false)
+    }
+
+    func setLibraryFolder(url: URL) async {
+        do {
+            let bookmarkData = try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            libraryFolderBookmarkData = bookmarkData
+            startLibraryFolderMonitoring(for: url)
+
+            let result = await scanLibraryFolder(reason: "Library Location Set", showToast: true)
+            if result == nil {
+                showToastMessage(title: "Scan Failed", message: "Could not scan the selected library folder.", isError: true)
+            }
+        } catch {
+            logger.error("Failed to create library folder bookmark: \(error.localizedDescription)")
+            showToastMessage(title: "Library Location Failed", message: "Could not access the selected folder.", isError: true)
+        }
+    }
+
+    func scanLibraryFolder(reason: String, showToast: Bool = true) async -> LibraryScanResult? {
+        guard !isLibraryScanRunning else { return nil }
+        guard let folderURL = resolveLibraryFolderURL() else { return nil }
+
+        isLibraryScanRunning = true
+        defer { isLibraryScanRunning = false }
+
+        let didStartAccessing = folderURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                folderURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let supportedExtensions = repository.supportedExtensions
+        let scannedFiles = await collectEbookFiles(in: folderURL, supportedExtensions: supportedExtensions)
+
+        let existingBooks = books
+        var existingPathSet = Set<String>()
+        for book in existingBooks {
+            if let url = book.fileURL {
+                existingPathSet.insert(url.standardizedFileURL.path)
+            }
+        }
+
+        var missingBooks: [Book] = []
+        for book in existingBooks {
+            guard let fileURL = book.fileURL else {
+                missingBooks.append(book)
+                continue
+            }
+            if !FileManager.default.fileExists(atPath: fileURL.path) {
+                missingBooks.append(book)
+            }
+        }
+
+        let filesByName = Dictionary(grouping: scannedFiles, by: { $0.lastPathComponent.lowercased() })
+        var claimedPaths = Set<String>()
+        var updatedCount = 0
+        var removedBooks: [Book] = []
+
+        for book in missingBooks {
+            guard let filename = book.fileURL?.lastPathComponent.lowercased() else {
+                removedBooks.append(book)
+                continue
+            }
+
+            let candidates = filesByName[filename] ?? []
+            let availableCandidates = candidates.filter { !claimedPaths.contains($0.standardizedFileURL.path) }
+            if availableCandidates.isEmpty {
+                removedBooks.append(book)
+                continue
+            }
+
+            let matchedURL: URL?
+            if availableCandidates.count == 1 {
+                matchedURL = availableCandidates.first
+            } else if book.fileSize > 0 {
+                matchedURL = availableCandidates.first { fileSize(for: $0) == book.fileSize } ?? availableCandidates.first
+            } else {
+                matchedURL = availableCandidates.first
+            }
+
+            if let newURL = matchedURL {
+                book.fileURL = newURL
+                book.fileSize = fileSize(for: newURL)
+                book.dateModified = Date()
+                if let bookmarkData = try? newURL.bookmarkData(
+                    options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                ) {
+                    book.bookmarkData = bookmarkData
+                }
+                updatedCount += 1
+                claimedPaths.insert(newURL.standardizedFileURL.path)
+            } else {
+                removedBooks.append(book)
+            }
+        }
+
+        let newFiles = scannedFiles.filter {
+            let path = $0.standardizedFileURL.path
+            return !existingPathSet.contains(path) && !claimedPaths.contains(path)
+        }
+
+        var importResult: ImportResult?
+        if !newFiles.isEmpty {
+            importResult = await importService.importBooks(from: newFiles)
+        }
+
+        if !removedBooks.isEmpty {
+            try? repository.deleteMultiple(removedBooks, deleteFiles: false)
+        }
+
+        if updatedCount > 0 {
+            try? repository.save()
+        }
+
+        loadAll()
+        objectWillChange.send()
+
+        let result = LibraryScanResult(
+            imported: importResult?.imported ?? 0,
+            updated: updatedCount,
+            removed: removedBooks.count,
+            skipped: importResult?.skipped ?? 0,
+            failed: importResult?.failed ?? 0
+        )
+
+        if showToast {
+            if result.imported > 0 || result.updated > 0 || result.removed > 0 {
+                showToastMessage(
+                    title: "Library Updated",
+                    message: result.summary
+                )
+            } else if reason == "Manual" {
+                showToastMessage(title: "No Changes", message: "No new or missing books found.")
+            }
+        }
+
+        return result
+    }
+
+    private func startLibraryFolderMonitoring(for folderURL: URL) {
+        stopLibraryFolderMonitoring()
+
+        if folderURL.startAccessingSecurityScopedResource() {
+            libraryFolderAccessURL = folderURL
+        }
+
+        let fileDescriptor = open(folderURL.path, O_EVTONLY)
+        guard fileDescriptor != -1 else {
+            if let accessURL = libraryFolderAccessURL {
+                accessURL.stopAccessingSecurityScopedResource()
+                libraryFolderAccessURL = nil
+            }
+            logger.error("Failed to open library folder for monitoring.")
+            return
+        }
+
+        libraryFolderFileDescriptor = fileDescriptor
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fileDescriptor,
+            eventMask: [.write, .delete, .rename, .attrib, .extend, .link, .revoke],
+            queue: DispatchQueue.global(qos: .utility)
+        )
+
+        source.setEventHandler { [weak self] in
+            self?.scheduleLibraryScan()
+        }
+
+        source.setCancelHandler { [weak self] in
+            close(fileDescriptor)
+            self?.libraryFolderFileDescriptor = -1
+            if let accessURL = self?.libraryFolderAccessURL {
+                accessURL.stopAccessingSecurityScopedResource()
+                self?.libraryFolderAccessURL = nil
+            }
+        }
+
+        source.resume()
+        libraryFolderMonitor = source
+    }
+
+    private func stopLibraryFolderMonitoring() {
+        libraryFolderMonitor?.cancel()
+        libraryFolderMonitor = nil
+        scanDebounceTask?.cancel()
+        scanDebounceTask = nil
+    }
+
+    private func scheduleLibraryScan() {
+        scanDebounceTask?.cancel()
+        scanDebounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            _ = await self?.scanLibraryFolder(reason: "Folder Change", showToast: true)
+        }
+    }
+
+    private func resolveLibraryFolderURL() -> URL? {
+        guard !libraryFolderBookmarkData.isEmpty else { return nil }
+
+        var isStale = false
+        do {
+            let url = try URL(
+                resolvingBookmarkData: libraryFolderBookmarkData,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+
+            if isStale {
+                let newBookmark = try url.bookmarkData(
+                    options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                libraryFolderBookmarkData = newBookmark
+            }
+
+            return url
+        } catch {
+            logger.error("Failed to resolve library folder bookmark: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func collectEbookFiles(in folderURL: URL, supportedExtensions: [String]) async -> [URL] {
+        await Task.detached {
+            let fileManager = FileManager.default
+            guard let enumerator = fileManager.enumerator(
+                at: folderURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) else {
+                return []
+            }
+
+            var files: [URL] = []
+            while let element = enumerator.nextObject() as? URL {
+                guard let resourceValues = try? element.resourceValues(forKeys: [.isRegularFileKey]),
+                      resourceValues.isRegularFile == true else {
+                    continue
+                }
+
+                if supportedExtensions.contains(element.pathExtension.lowercased()) {
+                    files.append(element)
+                }
+            }
+            return files
+        }.value
+    }
+
+    private func fileSize(for url: URL) -> Int64 {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? Int64 else {
+            return 0
+        }
+        return size
+    }
+
+    private func showToastMessage(title: String, message: String, isError: Bool = false) {
+        Task { @MainActor in
+            ToastNotificationManager.shared.show(title: title, message: message, isError: isError)
+        }
+    }
+
     // MARK: - Conversion
 
     /// Check if Calibre is available for conversions
@@ -309,6 +598,24 @@ class LibraryService: ObservableObject {
 }
 
 // MARK: - Supporting Types
+
+struct LibraryScanResult {
+    let imported: Int
+    let updated: Int
+    let removed: Int
+    let skipped: Int
+    let failed: Int
+
+    var summary: String {
+        var parts: [String] = []
+        if imported > 0 { parts.append("Imported \(imported)") }
+        if updated > 0 { parts.append("Updated \(updated) paths") }
+        if removed > 0 { parts.append("Removed \(removed) missing") }
+        if skipped > 0 { parts.append("\(skipped) skipped") }
+        if failed > 0 { parts.append("\(failed) failed") }
+        return parts.isEmpty ? "No changes" : parts.joined(separator: ", ")
+    }
+}
 
 struct ImportResult {
     let imported: Int

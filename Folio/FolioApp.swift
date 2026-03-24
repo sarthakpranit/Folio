@@ -7,6 +7,7 @@
 
 import SwiftUI
 import CoreData
+import AppKit
 import FolioCore
 
 @main
@@ -35,6 +36,20 @@ struct FolioApp: App {
         .commands {
             // File menu additions
             CommandGroup(after: .newItem) {
+                Divider()
+
+                Button("Set Library Location...") {
+                    chooseLibraryLocation()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+
+                Button("Rescan Library Folder") {
+                    Task {
+                        await libraryService.scanLibraryFolder(reason: "Manual", showToast: true)
+                    }
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
                 Divider()
 
                 Button("Fetch Missing Metadata") {
@@ -195,6 +210,22 @@ struct FolioApp: App {
                 title: "No Changes",
                 message: "No embedded author names found in \(result.booksProcessed) books"
             )
+        }
+    }
+
+    private func chooseLibraryLocation() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Library Folder"
+        panel.message = "Select the folder where your books are stored."
+        panel.prompt = "Set Library"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+
+        if panel.runModal() == .OK, let url = panel.url {
+            Task {
+                await libraryService.setLibraryFolder(url: url)
+            }
         }
     }
 }

@@ -57,15 +57,39 @@ struct BookGroupGridItemView: View {
             // Cover image
             ZStack(alignment: .topTrailing) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(FormatStyle(format: primaryBook.format ?? "").gradient)
-
                     if let coverData = primaryBook.coverImageData,
                        let nsImage = NSImage(data: coverData) {
-                        Image(nsImage: nsImage)
+                        let coverImage = Image(nsImage: nsImage)
                             .resizable()
+
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.clear)
+                            .overlay(
+                                coverImage
+                                    .aspectRatio(contentMode: .fill)
+                                    .scaleEffect(1.5)
+                                    .blur(radius: 18)
+                                    .opacity(0.9)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        coverImage
                             .aspectRatio(contentMode: .fit)
+                            .overlay(
+                                coverImage
+                                    .aspectRatio(contentMode: .fit)
+                                    .blur(radius: 6)
+                                    .opacity(0.6)
+                                    .mask(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(style: StrokeStyle(lineWidth: 10))
+                                            .blur(radius: 6)
+                                    )
+                            )
                     } else {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(FormatStyle(format: primaryBook.format ?? "").gradient)
+
                         VStack(spacing: 8) {
                             if isLoadingMetadata {
                                 ProgressView()
