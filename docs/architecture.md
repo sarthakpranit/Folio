@@ -1,19 +1,21 @@
 # Architecture
 
-Folio is split into two layers:
+Folio currently has two concrete implementation layers:
 
-1. FolioCore (Swift Package)
-   - Models, services, networking clients, utilities
-   - UI-agnostic, shared with future iOS target
-
-2. Folio App (macOS target)
-   - SwiftUI/AppKit UI, app lifecycle, assets, entitlements
+1. Folio App (macOS target)
+   - SwiftUI UI for the grid, table, sidebar, overlays, settings, and Kindle flows
    - Core Data model and persistence wiring
+   - App-specific services such as `LibraryService`, `BookRepository`, and import coordination
+
+2. FolioCore (Swift Package)
+   - UI-agnostic services and models
+   - Metadata clients, HTTP transfer server, Bonjour, QR generation, Send to Kindle, Calibre integration
+   - Intended to stay reusable for any future iOS target
 
 ## Data Flow
-UI/ViewModels -> FolioCore services -> Core Data -> published changes -> UI updates
+SwiftUI views -> `LibraryService` facade -> repositories/import/search helpers -> Core Data and FolioCore services -> UI refresh
 
-## Rationale
-- Shared, testable business logic
-- Keeps platform-specific concerns out of the core
-- Eases Phase 2 iOS addition
+## Notes
+- The library grid is implemented with SwiftUI `LazyVGrid`, not AppKit `NSCollectionView`.
+- Core Data lives in the app target today; FolioCore is reusable service code rather than the persistence layer.
+- CloudKit support is scaffolded but not enabled end-to-end yet.

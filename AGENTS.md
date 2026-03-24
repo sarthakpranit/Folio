@@ -27,13 +27,13 @@ This document provides guidelines for effectively using an assistant (Codex / Cl
 When starting a new assistant session, provide essential context:
 
 ```
-I'm working on Folio, a native macOS ebook manager (iOS planned for Phase 2).
-Current phase: [Phase 1 macOS WiFi/Send-to-Kindle MVP | Phase 2 iOS/USB/Bonjour | Phase 3+]
+I'm working on Folio, a native macOS ebook manager (iOS planned later).
+Current phase: [Phase 1 macOS WiFi/Send-to-Kindle MVP complete | Phase 2 polish/search/device validation | Phase 3+]
 Working on: [specific feature/component]
 Last completed: [previous milestone]
 ```
 
-Or simply use the **`/resume`** command to load context automatically.
+If your assistant supports a resume workflow, use it. Otherwise, point it at [docs/session.md](docs/session.md) first.
 
 ### Core Project Principles
 
@@ -42,10 +42,10 @@ Always keep these in mind when asking your assistant (Codex / Claude Code) for h
 1. **Value Proposition:** "The Beautiful Ebook Library for Mac"
 2. **WiFi-First:** Wireless transfer is the marquee feature
 3. **Simplicity:** Fight feature creep, prioritize UX over features
-4. **Native:** Use platform-appropriate technologies (AppKit grid on macOS; SwiftUI for supporting views; SwiftUI on iOS in Phase 2)
+4. **Native:** Use the current SwiftUI-first macOS architecture unless there is a clear measured reason to change it
 5. **Performance:** Meet targets (<3s startup, <100ms search) and validate with prototypes (5k covers)
 6. **Open Source:** GPL v3, transparent, community-driven (Calibre integration)
-7. **Scope:** macOS-first launch; WiFi + Send to Kindle only; Swifter HTTP server; USB/iOS/LLM deferred to Phase 2+
+7. **Scope:** macOS-first launch; WiFi + Send to Kindle only; Swifter HTTP server; USB/iOS/LLM deferred
 
 ---
 
@@ -53,11 +53,11 @@ Always keep these in mind when asking your assistant (Codex / Claude Code) for h
 
 ### Starting a Session
 
-**Option 1: Use `/resume` command (Codex / Claude Code)**
+**Option 1: Use your assistant's resume workflow if available**
 ```
 /resume
 ```
-Your assistant (Codex / Claude Code) will read `[docs/session.md](docs/session.md)` and provide context on where you left off.
+Your assistant should read [docs/session.md](docs/session.md) and provide context on where you left off.
 
 **Option 2: Manual context**
 ```
@@ -75,18 +75,13 @@ What should I tackle next according to [docs/roadmap.md](docs/roadmap.md)?
 
 **Ask for clarification:**
 ```
-The [docs/requirements.md](docs/requirements.md) mentions using NSFetchedResultsController.
-Can you show me how to implement this for the book grid view?
+The current grid uses SwiftUI `LazyVGrid`.
+Can you show me how to improve its performance without changing the user-facing behavior?
 ```
 
 ### Ending a Session
 
-**Always use `/update-session` (Codex / Claude Code)** to log progress:
-```
-/update-session
-```
-
-Your assistant (Codex / Claude Code) will ask questions to capture:
+Capture a short session update in [docs/session.md](docs/session.md) before you stop. Your assistant should ask about:
 - What you completed
 - Current work in progress
 - Any blockers
@@ -104,13 +99,14 @@ This maintains continuity between sessions and prevents context loss.
 **DO:**
 ```
 ✅ "Implement the CalibreConversionService.convert() method
-   according to [docs/requirements.md](docs/requirements.md) section 1.3"
+   according to [docs/requirements.md](docs/requirements.md)"
 
 ✅ "Create unit tests for LibraryService.searchBooks() that
    verify <100ms performance with 5,000 books"
 
-✅ "Refactor BookGridCell to use async image loading with
-   Kingfisher, ensuring smooth scrolling"
+✅ "Refine the book grid implementation in
+   [BookGridView.swift](Folio/Views/Books/BookGridView.swift) without
+   changing grouping or selection behavior"
 ```
 
 **DON'T:**
@@ -138,14 +134,14 @@ Please review for:
 **Reference the technical docs:**
 ```
 I'm implementing the Core Data model from
-[docs/requirements.md](docs/requirements.md) section 1.1. Should I use
+[docs/requirements.md](docs/requirements.md). Should I use
 NSManagedObject subclasses or @FetchRequest?
 ```
 
 **Ask about trade-offs:**
 ```
-For image caching, should I use Kingfisher or SDWebImage?
-What are the pros/cons for our use case (5,000+ book covers)?
+For cover loading, should we keep the current direct fetch approach or
+add an image library? What are the trade-offs for our current codebase?
 ```
 
 ---
@@ -229,10 +225,10 @@ What's best for reliability and maintainability?
 
 **Example:**
 ```
-For the book grid on macOS, should I use:
-1. NSCollectionView (AppKit) for performance
-2. LazyVGrid (SwiftUI) for modern code
-3. Hybrid approach
+For the current SwiftUI book grid on macOS, should I:
+1. Keep `LazyVGrid` and optimize it
+2. Move specific hotspots to AppKit
+3. Use a hybrid approach only where profiling proves it helps
 
 Constraints:
 - Need 60fps scrolling with 5,000 books
@@ -244,8 +240,8 @@ Constraints:
 
 After making a decision with your assistant (Codex / Claude Code)'s help:
 ```
-We decided to use NSCollectionView for macOS grid view
-because SwiftUI can't achieve 60fps with large collections.
+We decided to keep the SwiftUI grid for now and only revisit AppKit
+if profiling shows it is necessary.
 Please help me add this to [docs/session.md](docs/session.md) decision log.
 ```
 
@@ -331,7 +327,7 @@ Which approach aligns best with our architecture?
 **Implementation Help:**
 - "Show me how to implement Bonjour service discovery"
 - "How do I parse ebook-convert progress output?"
-- "What's the correct way to use NSFetchedResultsController with SwiftUI?"
+- "What's the correct way to keep a SwiftUI `LazyVGrid` responsive with a large library?"
 
 **Best Practices:**
 - "Am I handling errors correctly in this code?"
@@ -660,12 +656,11 @@ Book has everything: title, cover image data, file URL, ISBN, published date, fi
 1. **WiFi Transfer**: Starts an HTTP server (Swifter). Phone opens the URL or scans a QR code → sees a mobile-friendly webpage → tap to download. Bonjour auto-discovers the server on the network.
 2. **Send to Kindle**: Emails the book to `@kindle.com` using native Swift SMTP. Amazon converts and delivers to your Kindle.
 
-### Dependencies (only 3)
+### Dependencies
 
 | Dependency | Purpose |
 |-----------|---------|
 | Swifter | HTTP server for WiFi transfer |
-| Kingfisher | Image caching for cover downloads |
 | SwiftyJSON | JSON parsing for API responses |
 
 Everything else is native Apple frameworks (Core Data, Network.framework, Core Image, SwiftUI).

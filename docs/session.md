@@ -3,33 +3,32 @@
 Use this file as the single running log for progress and decisions. The previous session history has been archived.
 
 ## Current Phase
-Phase 2: Intelligence & Polish
+Phase 2: polish and repository truth-pass cleanup
 
 ## Current Focus
+- Align README, docs, tests, and AGENTS.md with the actual codebase
 - Enhanced search syntax and saved searches
 - Smart collections
 - Real-device testing (WiFi transfer + Send to Kindle)
 - CloudKit entitlements and sync validation
 
 ## Recent Wins
-- Made AGENTS.md tool-agnostic and linkified doc references
-- Added CLAUDE.md symlink to AGENTS.md and added it to the Xcode project navigator
-- Ran a clean build successfully
+- Verified the app still builds successfully
+- Identified the major doc-to-code mismatches and stale assistant guidance
+- Confirmed `.txt` is intentionally unsupported and reflected that in tests/docs
 
 ## Session Update
 - Completed
-  - Moved AGENTS.md into the project and made it tool-agnostic for Codex/Claude Code
-  - Added CLAUDE.md symlink and Xcode project file reference
-  - Verified docs and performed doc-to-code gap check
-  - Built the project
+  - Audited README, docs, AGENTS.md, tests, and current implementation for drift
+  - Confirmed the app build succeeds
+  - Identified stale architecture guidance, dead archive links, and test mismatches
 - In Progress
-  - None
+  - Truth-pass cleanup of docs, tests, and assistant guidance
 - Blockers
-  - None
+  - None beyond normal dirty-worktree caution
 - Next Steps
-  - Review git status and confirm unrelated changes are intended before release
+  - Finish doc/test cleanup
+  - Re-run targeted verification
 - Decisions
-  - AGENTS.md is the single source of truth for assistant guidance; CLAUDE.md is a symlink for compatibility
-  - Guidance is explicitly tool-agnostic (Codex / Claude Code)
-
-For detailed historical entries, see `docs/archive/session-state.md`.
+  - `.txt` is not a supported Folio import or transfer format
+  - Docs should describe shipped behavior, not planned or previously proposed architecture

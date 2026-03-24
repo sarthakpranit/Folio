@@ -643,7 +643,7 @@ struct BookGroupContextMenu: View {
 
         Divider()
 
-        // Send to Kindle - uses preferred Kindle format (MOBI > AZW3 > EPUB)
+        // Send to Kindle - uses the best compatible existing format (EPUB > AZW3 > PDF > TXT)
         Menu("Send to Kindle...") {
             if kindleDevices.isEmpty {
                 Text("No Kindle devices configured")

@@ -168,7 +168,6 @@ struct BookRepositoryTests {
         #expect(repository.isValidEbookFile(URL(fileURLWithPath: "/test/book.pdf")) == true)
         #expect(repository.isValidEbookFile(URL(fileURLWithPath: "/test/book.azw3")) == true)
         #expect(repository.isValidEbookFile(URL(fileURLWithPath: "/test/book.EPUB")) == true)  // Case insensitive
-        #expect(repository.isValidEbookFile(URL(fileURLWithPath: "/test/book.txt")) == true)
         #expect(repository.isValidEbookFile(URL(fileURLWithPath: "/test/book.doc")) == false)
         #expect(repository.isValidEbookFile(URL(fileURLWithPath: "/test/book.mp3")) == false)
     }

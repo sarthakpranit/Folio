@@ -29,16 +29,14 @@ This document consolidates the PRD and technical requirements into a single sour
 ## Core Architecture Decisions
 - Calibre CLI for conversion and metadata
 - Swifter for HTTP server
-- Core Data (CloudKit-ready)
-- AppKit grid for performance, SwiftUI for supporting views
+- Core Data in the macOS app target, with CloudKit scaffolding not yet enabled
+- SwiftUI grid/table/sidebar UI, coordinated through `LibraryService`
 
 ## Core Data Model (Phase 1)
-Entities: Book, Author, Series, Tag, Collection
-Key indices: Book.title, Book.dateAdded, Book.lastOpened, Author.name, Series.name
+Entities: Book, Author, Series, Tag, Collection, KindleDevice
+Key indices: Book.title, Book.dateAdded, Book.lastOpened, Author.name, Series.name, KindleDevice.name
 
 ## Phase Summary
 Phase 1: macOS WiFi + Send to Kindle MVP
-Phase 2: iOS + USB + Bonjour/QR polish, optional LLM metadata
+Phase 2: library-management polish, search/saved-search follow-through, device validation, optional CloudKit work
 Phase 3: advanced features
-
-For historical detail and full original specs, see `docs/archive/prd.md` and `docs/archive/technical-requirements.md`.

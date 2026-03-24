@@ -3,7 +3,7 @@
 This roadmap consolidates the release plan and current session state. It tracks what is done, what is in progress, and what remains.
 
 ## Current Phase
-Phase 2: Intelligence & Polish (in progress)
+Phase 2: polish and library-management follow-through (in progress)
 
 ## Completed Highlights
 - Core Data model and persistence
@@ -22,13 +22,12 @@ Phase 2: Intelligence & Polish (in progress)
 - Real-device testing for WiFi transfer and Send to Kindle
 - CloudKit entitlements setup and sync validation
 
-## Remaining Phase 1 Polish
-- Wire conversion menu to CalibreConversionService
-- Device testing (Kindle/Kobo)
+## Follow-up Cleanup
+- Tighten repository/docs/test consistency after recent architecture changes
+- Decide whether collections remain dormant or move into active UI scope
+- Remove or document any intentionally dormant dependencies and stubs
 
 ## Longer-Term (Phase 2+)
 - iOS target and UI parity
 - USB device workflows
 - LLM metadata enhancement (optional)
-
-For the full original checklist, see `docs/archive/release-plan.md` and `docs/archive/session-state.md`.

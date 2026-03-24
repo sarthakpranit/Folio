@@ -32,7 +32,7 @@ class BookRepository {
     private let viewContext: NSManagedObjectContext
 
     /// Supported ebook file extensions
-    let supportedExtensions = ["epub", "mobi", "azw3", "pdf", "cbz", "cbr", "fb2", "txt", "rtf"]
+    let supportedExtensions = ["epub", "mobi", "azw3", "pdf", "cbz", "cbr", "fb2", "rtf"]
 
     init(context: NSManagedObjectContext) {
         self.viewContext = context

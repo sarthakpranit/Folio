@@ -12,7 +12,6 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/httpswift/swifter.git", from: "1.5.0"),
-        .package(url: "https://github.com/onevcat/Kingfisher.git", from: "7.11.0"),
         .package(url: "https://github.com/SwiftyJSON/SwiftyJSON.git", from: "5.0.1")
     ],
     targets: [
@@ -20,7 +19,6 @@ let package = Package(
             name: "FolioCore",
             dependencies: [
                 .product(name: "Swifter", package: "swifter"),
-                .product(name: "Kingfisher", package: "Kingfisher"),
                 .product(name: "SwiftyJSON", package: "SwiftyJSON")
             ]
         ),

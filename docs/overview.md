@@ -1,6 +1,6 @@
 # Folio Overview
 
-Folio is a native macOS ebook manager focused on a fast, beautiful library experience and effortless wireless transfer. The initial release is macOS-only with WiFi transfer and Send to Kindle as marquee features. iOS and USB workflows are deferred to Phase 2.
+Folio is a native macOS ebook manager focused on a fast, beautiful library experience and effortless wireless transfer. The initial release is macOS-only with WiFi transfer and Send to Kindle as marquee features. iOS and USB workflows are still deferred.
 
 ## Value Proposition
 - "The Beautiful Ebook Library for Mac"
@@ -9,8 +9,8 @@ Folio is a native macOS ebook manager focused on a fast, beautiful library exper
 - Local-first, privacy-respecting, GPL v3 (Calibre integration)
 
 ## Current Phase
-- Phase 2: Intelligence & Polish (in progress)
-- Phase 1: WiFi-first MVP is largely complete
+- Phase 2: polish and library-management follow-through (in progress)
+- Phase 1: WiFi-first MVP is complete
 
 ## Scope Snapshot
 In scope for macOS launch:
@@ -23,7 +23,7 @@ In scope for macOS launch:
 Deferred:
 - iOS app
 - USB device workflows
-- Bonjour/QR enhancements beyond current tooling
 - LLM-based metadata enhancement
+- CloudKit sync enablement until entitlements and validation are ready
 
 For detailed requirements and implementation, see `docs/requirements.md` and `docs/roadmap.md`.

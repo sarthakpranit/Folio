@@ -14,5 +14,3 @@ This document consolidates Xcode setup guidance.
 
 ## Build
 - Build and run in Xcode (My Mac)
-
-For the full original setup steps, see `docs/archive/XCODE_SETUP.md`.

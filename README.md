@@ -6,7 +6,7 @@
 
 Manage your ebooks with a gorgeous interface and transfer wirelessly to your devices. No cables, no complexity.
 
-[![Status](https://img.shields.io/badge/status-Phase%201%20Complete-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/status-Phase%202%20Polish%20In%20Progress-blue.svg)]()
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey.svg)]()
 
@@ -36,7 +36,7 @@ Calibre is powerful but overwhelming. You just want to organize your ebooks and 
 | Feature | Status |
 |---------|--------|
 | **Book Management** | ✅ |
-| Import EPUB, MOBI, PDF, AZW3, CBZ/CBR | ✅ |
+| Import EPUB, MOBI, PDF, AZW3, CBZ/CBR, FB2, RTF | ✅ |
 | Drag & drop import | ✅ |
 | Grid view with cover images | ✅ |
 | Sort by title, author, date added, file size | ✅ |
@@ -59,7 +59,7 @@ Calibre is powerful but overwhelming. You just want to organize your ebooks and 
 | Send to Kindle via email | ✅ |
 | Multiple Kindle device support | ✅ |
 | SMTP email configuration | ✅ |
-| Auto-select best format (EPUB > AZW3 > PDF) | ✅ |
+| Auto-select best existing compatible format (EPUB > AZW3 > PDF) | ✅ |
 | **Format Conversion** | ✅ |
 | Convert between EPUB, MOBI, PDF, AZW3 | ✅ |
 | Powered by Calibre ebook-convert | ✅ |
@@ -92,7 +92,7 @@ Download from Libby/OverDrive → Import to Folio → One-click "Send to Kindle"
 Download EPUBs → Folio organizes with covers → Transfer wirelessly via browser → Done
 
 ### Format Conversion
-Have an EPUB, need MOBI? Folio converts automatically when sending to Kindle.
+Have an EPUB, need MOBI or AZW3? Folio can convert it with Calibre from the library UI before you transfer it.
 
 ### Multiple Formats, One View
 Have the same book in EPUB and MOBI? Folio groups them as one item, showing all format badges.
@@ -101,17 +101,13 @@ Have the same book in EPUB and MOBI? Folio groups them as one item, showing all 
 
 ## Architecture
 
-Folio is built as a **4-layer cake** where data flows strictly downward:
+Folio is split between a reusable core package and the macOS app:
 
 ```
 ┌─────────────────────────────────────────────┐
-│  VIEWS (what users see)                     │  SwiftUI — grid, table, sidebar
+│  Folio App                                 │  SwiftUI UI, app lifecycle, Core Data
 ├─────────────────────────────────────────────┤
-│  SERVICES (what coordinates things)         │  LibraryService — the "brain"
-├─────────────────────────────────────────────┤
-│  REPOSITORIES (what talks to the database)  │  BookRepository — CRUD on books
-├─────────────────────────────────────────────┤
-│  CORE DATA (the database)                   │  6 entities: Book, Author, Series...
+│  FolioCore                                 │  Transfer, metadata, Kindle, Bonjour
 └─────────────────────────────────────────────┘
 ```
 
@@ -144,12 +140,11 @@ User drops files → ImportService saves to Core Data → BookGroupingService gr
 | `BookRepository.swift` | All Core Data operations |
 | `FormatStyle.swift` | Color gradients and icons per format |
 
-### Dependencies (only 3)
+### Dependencies
 
 | Dependency | Purpose |
 |-----------|---------|
 | [Swifter](https://github.com/httpswift/swifter) | HTTP server for WiFi transfer |
-| [Kingfisher](https://github.com/onevcat/Kingfisher) | Image caching for cover downloads |
 | [SwiftyJSON](https://github.com/SwiftyJSON/SwiftyJSON) | JSON parsing for API responses |
 
 Everything else is native Apple frameworks (Core Data, Network.framework, Core Image, SwiftUI).
@@ -192,7 +187,6 @@ Build and run with Xcode 15+.
 - `docs/architecture.md` — Architecture and layering
 - `docs/setup.md` — Xcode setup summary
 - `docs/session.md` — Current session log
-- `docs/archive/` — Historical documents
 
 ---
 
