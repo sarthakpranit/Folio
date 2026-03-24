@@ -31,6 +31,7 @@
 
 /* Begin PBXFileReference section */
 		451966572F71E3EA00694452 /* AGENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AGENTS.md; sourceTree = "<group>"; };
+		E527033019224B1497F6DF3A /* docs */ = {isa = PBXFileReference; lastKnownFileType = folder; path = docs; sourceTree = "<group>"; };
 		F2CA75B8C3384A9691BABF4A /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
 		45A26E352EEF58E2003DEF3A /* Folio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Folio.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		45A26E472EEF58E3003DEF3A /* FolioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FolioTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -94,6 +95,7 @@
 				45E985042EEF5DC500211C6F /* Frameworks */,
 				45A26E362EEF58E2003DEF3A /* Products */,
 				451966572F71E3EA00694452 /* AGENTS.md */,				F2CA75B8C3384A9691BABF4A /* CLAUDE.md */,
+				E527033019224B1497F6DF3A /* docs */,
 
 			);
 			sourceTree = "<group>";

@@ -27,6 +27,8 @@ struct BookTableView: View {
     let libraryService: LibraryService
     let kindleDevices: [KindleDevice]
     let viewContext: NSManagedObjectContext
+    @Binding var isSendingToKindle: Bool
+    @Binding var sendToKindleStatus: String
 
     @State private var selection: Set<String> = []
     @State private var showingGroupDetail: BookGroup?
@@ -174,6 +176,11 @@ struct BookTableView: View {
                 libraryService: libraryService,
                 kindleDevices: kindleDevices,
                 viewContext: viewContext,
+                allBooks: books,
+                selectedBooks: $selectedBooks,
+                isMultiSelectMode: isMultiSelectMode,
+                isSendingToKindle: $isSendingToKindle,
+                sendToKindleStatus: $sendToKindleStatus,
                 showingDetailFor: $showingGroupDetail,
                 showingEditFor: $showingEditFor
             )

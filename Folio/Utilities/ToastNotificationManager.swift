@@ -32,6 +32,7 @@ class ToastNotificationManager: ObservableObject {
     @Published var title: String = ""
     @Published var message: String = ""
     @Published var isError: Bool = false
+    @Published var isProgress: Bool = false
 
     private var dismissTask: Task<Void, Never>?
 
@@ -39,6 +40,7 @@ class ToastNotificationManager: ObservableObject {
         self.title = title
         self.message = message
         self.isError = isError
+        self.isProgress = false
         self.isShowing = true
 
         // Auto-dismiss after delay
@@ -49,6 +51,17 @@ class ToastNotificationManager: ObservableObject {
                 self.isShowing = false
             }
         }
+    }
+
+    func showProgress(title: String, message: String) {
+        self.title = title
+        self.message = message
+        self.isError = false
+        self.isProgress = true
+        self.isShowing = true
+
+        // Progress toasts stay visible until replaced by success/error toast or dismissed.
+        dismissTask?.cancel()
     }
 
     func dismiss() {

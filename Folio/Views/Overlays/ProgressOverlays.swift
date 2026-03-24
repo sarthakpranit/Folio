@@ -8,6 +8,7 @@
 // Components:
 // - ImportProgressBar: Top bar showing import progress with book name
 // - ConversionProgressOverlay: Modal overlay for format conversion
+// - SendToKindleProgressBar: Top bar shown while sending to Kindle
 //
 
 import SwiftUI
@@ -106,6 +107,47 @@ struct ConversionProgressOverlay: View {
     }
 }
 
+// MARK: - Send to Kindle Progress Bar
+
+/// A progress bar shown at the top of the window during Send to Kindle
+struct SendToKindleProgressBar: View {
+    let status: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Rectangle()
+                        .fill(Color.accentColor.opacity(0.2))
+
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(width: geometry.size.width * 0.35)
+                }
+            }
+            .frame(height: 4)
+
+            HStack(spacing: 12) {
+                ProgressView()
+                    .scaleEffect(0.7)
+
+                Text(status.isEmpty ? "Sending to Kindle..." : status)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial)
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
+        .animation(.easeInOut(duration: 0.3), value: status)
+        .accessibilityIdentifier("sendToKindleProgressBar")
+    }
+}
+
 #Preview("Import Progress") {
     ImportProgressBar(
         progress: 0.45,
@@ -120,4 +162,8 @@ struct ConversionProgressOverlay: View {
         progress: 0.67,
         status: "Converting to MOBI..."
     )
+}
+
+#Preview("Send to Kindle Progress") {
+    SendToKindleProgressBar(status: "Uploading to Kindle...")
 }

@@ -294,6 +294,18 @@ class LibraryService: ObservableObject {
     func generateSortTitle(_ title: String) -> String {
         repository.generateSortTitle(title)
     }
+
+    // MARK: - Conversion
+
+    /// Check if Calibre is available for conversions
+    var isCalibreAvailable: Bool {
+        CalibreConversionService.shared.isCalibreAvailable
+    }
+
+    /// Convert a book file to a target format using Calibre
+    func convertBook(at url: URL, to format: String, options: ConversionOptions = .default) async throws -> URL {
+        try await CalibreConversionService.shared.convert(url, to: format, options: options)
+    }
 }
 
 // MARK: - Supporting Types

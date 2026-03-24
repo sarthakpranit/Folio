@@ -27,16 +27,27 @@ struct ToastView: View {
             VStack {
                 Spacer()
                 HStack(spacing: 12) {
-                    Image(systemName: manager.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .foregroundColor(manager.isError ? .orange : .green)
-                        .font(.title2)
+                    ZStack {
+                        if manager.isProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: manager.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                                .foregroundColor(manager.isError ? .orange : .green)
+                                .font(.title2)
+                        }
+                    }
+                    .frame(width: 20, height: 20)
+                    .transition(.opacity.combined(with: .scale))
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(manager.title)
                             .font(.headline)
+                            .id("title-\(manager.title)")
                         Text(manager.message)
                             .font(.subheadline)
                             .foregroundColor(.secondary)
+                            .id("message-\(manager.message)")
                     }
 
                     Spacer()
@@ -58,6 +69,10 @@ struct ToastView: View {
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .animation(.spring(response: 0.3), value: manager.isShowing)
+            .animation(.easeInOut(duration: 0.25), value: manager.isProgress)
+            .animation(.easeInOut(duration: 0.25), value: manager.isError)
+            .animation(.easeInOut(duration: 0.25), value: manager.title)
+            .animation(.easeInOut(duration: 0.25), value: manager.message)
         }
     }
 }

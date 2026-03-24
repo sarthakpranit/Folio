@@ -33,6 +33,10 @@ struct BookGroupGridItemView: View {
     let libraryService: LibraryService
     let kindleDevices: [KindleDevice]
     let viewContext: NSManagedObjectContext
+    let allBooks: [Book]
+    @Binding var selectedBooks: Set<NSManagedObjectID>
+    @Binding var isSendingToKindle: Bool
+    @Binding var sendToKindleStatus: String
     @Binding var showingDetailFor: BookGroup?
     @Binding var showingEditFor: BookGroup?
     @State private var isLoadingMetadata = false
@@ -49,7 +53,7 @@ struct BookGroupGridItemView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             // Cover image
             ZStack(alignment: .topTrailing) {
                 ZStack {
@@ -130,15 +134,15 @@ struct BookGroupGridItemView: View {
                 .multilineTextAlignment(.leading)
                 .foregroundColor(.primary)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .frame(height: 36)
+                .frame(height: 36, alignment: .topLeading)
 
             // Authors
-            if let authors = primaryBook.authors as? Set<Author>, !authors.isEmpty {
-                Text(authors.compactMap { $0.name }.joined(separator: ", "))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
+            Text(authorText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .frame(height: 14, alignment: .topLeading)
+                .opacity(authorText.isEmpty ? 0 : 1)
 
             // Format badges (showing all formats) and total file size
             HStack(spacing: 4) {
@@ -161,6 +165,11 @@ struct BookGroupGridItemView: View {
                 libraryService: libraryService,
                 kindleDevices: kindleDevices,
                 viewContext: viewContext,
+                allBooks: allBooks,
+                selectedBooks: $selectedBooks,
+                isMultiSelectMode: isInMultiSelectMode,
+                isSendingToKindle: $isSendingToKindle,
+                sendToKindleStatus: $sendToKindleStatus,
                 isLoadingMetadata: $isLoadingMetadata,
                 showingDetailFor: $showingDetailFor,
                 showingEditFor: $showingEditFor
@@ -176,6 +185,13 @@ struct BookGroupGridItemView: View {
 
     private var formattedTotalSize: String {
         ByteCountFormatter.string(fromByteCount: group.totalSize, countStyle: .file)
+    }
+
+    private var authorText: String {
+        if let authors = primaryBook.authors as? Set<Author>, !authors.isEmpty {
+            return authors.compactMap { $0.name }.joined(separator: ", ")
+        }
+        return ""
     }
 
     private func fetchMetadataIfNeeded() async {
@@ -285,6 +301,11 @@ struct BookGroupContextMenuContent: View {
     let libraryService: LibraryService
     let kindleDevices: [KindleDevice]
     let viewContext: NSManagedObjectContext
+    let allBooks: [Book]
+    @Binding var selectedBooks: Set<NSManagedObjectID>
+    let isMultiSelectMode: Bool
+    @Binding var isSendingToKindle: Bool
+    @Binding var sendToKindleStatus: String
     @Binding var showingDetailFor: BookGroup?
     @Binding var showingEditFor: BookGroup?
 
@@ -301,6 +322,38 @@ struct BookGroupContextMenuContent: View {
             guard let devices = book.kindleDevices as? Set<KindleDevice> else { return false }
             return devices.contains(device)
         }
+    }
+
+    private var selectedBookObjects: [Book] {
+        allBooks.filter { selectedBooks.contains($0.objectID) }
+    }
+
+    private func deleteSelectedBooks() {
+        let booksToDelete = selectedBookObjects
+        guard !booksToDelete.isEmpty else { return }
+        do {
+            try libraryService.deleteBooks(booksToDelete, deleteFiles: false)
+            selectedBooks.removeAll()
+        } catch {
+            showNotification(title: "Delete Failed", message: error.localizedDescription, isError: true)
+        }
+    }
+    private func startSendProgress(for title: String?, deviceName: String?) {
+        isSendingToKindle = true
+        let bookTitle = title ?? "Book"
+        let target = deviceName ?? "Kindle"
+        sendToKindleStatus = "Sending \(bookTitle) to \(target)..."
+        Task { @MainActor in
+            ToastNotificationManager.shared.showProgress(
+                title: "Sending to Kindle",
+                message: sendToKindleStatus
+            )
+        }
+    }
+
+    private func stopSendProgress() {
+        isSendingToKindle = false
+        sendToKindleStatus = ""
     }
 
     var body: some View {
@@ -342,7 +395,7 @@ struct BookGroupContextMenuContent: View {
                 .disabled(currentFormat == format)
             }
         }
-        .disabled(!CalibreConversionService.shared.isCalibreAvailable)
+        .disabled(!libraryService.isCalibreAvailable)
 
         Divider()
 
@@ -375,9 +428,15 @@ struct BookGroupContextMenuContent: View {
 
         Divider()
 
-        Button("Delete", role: .destructive) {
-            for book in group.books {
-                try? libraryService.deleteBook(book)
+        if isMultiSelectMode && selectedBooks.count > 1 {
+            Button("Delete \(selectedBooks.count) Book(s)", role: .destructive) {
+                deleteSelectedBooks()
+            }
+        } else {
+            Button("Delete", role: .destructive) {
+                for book in group.books {
+                    try? libraryService.deleteBook(book)
+                }
             }
         }
     }
@@ -418,6 +477,9 @@ struct BookGroupContextMenuContent: View {
             }
         }
 
+        startSendProgress(for: book.title, deviceName: device.name)
+        defer { stopSendProgress() }
+
         do {
             let result = try await sendService.send(fileURL: accessibleURL, to: kindleEmail, bookTitle: book.title ?? "Untitled")
             if result.success {
@@ -448,7 +510,7 @@ struct BookGroupContextMenuContent: View {
         showNotification(title: "Converting", message: "Converting to \(format.uppercased())...")
 
         do {
-            let outputURL = try await CalibreConversionService.shared.convert(accessibleURL, to: format)
+            let outputURL = try await libraryService.convertBook(at: accessibleURL, to: format)
             let result = await libraryService.importBooks(from: [outputURL])
 
             if result.imported > 0 {
@@ -470,6 +532,11 @@ struct BookGroupContextMenu: View {
     let libraryService: LibraryService
     let kindleDevices: [KindleDevice]
     let viewContext: NSManagedObjectContext
+    let allBooks: [Book]
+    @Binding var selectedBooks: Set<NSManagedObjectID>
+    let isMultiSelectMode: Bool
+    @Binding var isSendingToKindle: Bool
+    @Binding var sendToKindleStatus: String
     @Binding var isLoadingMetadata: Bool
     @Binding var showingDetailFor: BookGroup?
     @Binding var showingEditFor: BookGroup?
@@ -487,6 +554,39 @@ struct BookGroupContextMenu: View {
             guard let devices = book.kindleDevices as? Set<KindleDevice> else { return false }
             return devices.contains(device)
         }
+    }
+
+    private var selectedBookObjects: [Book] {
+        allBooks.filter { selectedBooks.contains($0.objectID) }
+    }
+
+    private func deleteSelectedBooks() {
+        let booksToDelete = selectedBookObjects
+        guard !booksToDelete.isEmpty else { return }
+        do {
+            try libraryService.deleteBooks(booksToDelete, deleteFiles: false)
+            selectedBooks.removeAll()
+        } catch {
+            showNotification(title: "Delete Failed", message: error.localizedDescription, isError: true)
+        }
+    }
+
+    private func startSendProgress(for title: String?, deviceName: String?) {
+        isSendingToKindle = true
+        let bookTitle = title ?? "Book"
+        let target = deviceName ?? "Kindle"
+        sendToKindleStatus = "Sending \(bookTitle) to \(target)..."
+        Task { @MainActor in
+            ToastNotificationManager.shared.showProgress(
+                title: "Sending to Kindle",
+                message: sendToKindleStatus
+            )
+        }
+    }
+
+    private func stopSendProgress() {
+        isSendingToKindle = false
+        sendToKindleStatus = ""
     }
 
     var body: some View {
@@ -539,7 +639,7 @@ struct BookGroupContextMenu: View {
                 .disabled(currentFormat == format)
             }
         }
-        .disabled(!CalibreConversionService.shared.isCalibreAvailable)
+        .disabled(!libraryService.isCalibreAvailable)
 
         Divider()
 
@@ -616,9 +716,15 @@ struct BookGroupContextMenu: View {
 
         Divider()
 
-        Button("Delete All Formats", role: .destructive) {
-            for book in group.books {
-                try? libraryService.deleteBook(book)
+        if isMultiSelectMode && selectedBooks.count > 1 {
+            Button("Delete \(selectedBooks.count) Book(s)", role: .destructive) {
+                deleteSelectedBooks()
+            }
+        } else {
+            Button("Delete All Formats", role: .destructive) {
+                for book in group.books {
+                    try? libraryService.deleteBook(book)
+                }
             }
         }
     }
@@ -671,6 +777,9 @@ struct BookGroupContextMenu: View {
                 accessibleURL.stopAccessingSecurityScopedResource()
             }
         }
+
+        startSendProgress(for: book.title, deviceName: device.name)
+        defer { stopSendProgress() }
 
         do {
             let result = try await sendService.send(
@@ -798,7 +907,7 @@ struct BookGroupContextMenu: View {
         showNotification(title: "Converting", message: "Converting to \(format.uppercased())...")
 
         do {
-            let outputURL = try await CalibreConversionService.shared.convert(accessibleURL, to: format)
+            let outputURL = try await libraryService.convertBook(at: accessibleURL, to: format)
 
             // Import the converted file into the library
             let result = await libraryService.importBooks(from: [outputURL])

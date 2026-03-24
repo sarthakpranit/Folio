@@ -32,6 +32,26 @@ final class FolioUITests: XCTestCase {
     }
 
     @MainActor
+    func testSearchFieldSelectAllReplacesText() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let searchField = app.searchFields["Search books..."].firstMatch
+        let fallbackSearchField = app.searchFields["librarySearchField"].firstMatch
+        let activeSearchField = searchField.exists ? searchField : fallbackSearchField
+
+        XCTAssertTrue(activeSearchField.exists, "Search field should exist.")
+
+        activeSearchField.click()
+        activeSearchField.typeText("hello")
+
+        app.typeKey("a", modifierFlags: .command)
+        activeSearchField.typeText("x")
+
+        XCTAssertEqual(activeSearchField.value as? String, "x")
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {

@@ -41,6 +41,7 @@ struct ContentView: View {
     @State private var selectedBook: Book?
     @State private var selectedBooks: Set<NSManagedObjectID> = []
     @State private var isMultiSelectMode = false
+    @State private var hasKeyMonitor = false
     @State private var isDropTargeted = false
     @State private var showingImportResult = false
     @State private var importResult: ImportResult?
@@ -56,6 +57,8 @@ struct ContentView: View {
     @State private var conversionStatus: String = ""
     @State private var showingConversionAlert = false
     @State private var conversionAlertMessage = ""
+    @State private var isSendingToKindle = false
+    @State private var sendToKindleStatus: String = ""
     @State private var showingSendToKindleSheet = false
     @State private var showingKindleSettings = false
     @State private var showingAddKindleDevice = false
@@ -405,6 +408,7 @@ struct ContentView: View {
                 )
         }
         .searchable(text: $searchText, prompt: "Search books...")
+        .accessibilityIdentifier("librarySearchField")
         .toolbar {
             toolbarContent
         }
@@ -445,13 +449,15 @@ struct ContentView: View {
             }
         }
         .overlay(alignment: .top) {
-            if libraryService.isImporting {
-                ImportProgressBar(
-                    progress: libraryService.importProgress,
-                    currentBook: libraryService.importCurrentBookName,
-                    current: libraryService.importCurrent,
-                    total: libraryService.importTotal
-                )
+            VStack(spacing: 0) {
+                if libraryService.isImporting {
+                    ImportProgressBar(
+                        progress: libraryService.importProgress,
+                        currentBook: libraryService.importCurrentBookName,
+                        current: libraryService.importCurrent,
+                        total: libraryService.importTotal
+                    )
+                }
             }
         }
         .overlay(alignment: .bottom) {
@@ -462,10 +468,15 @@ struct ContentView: View {
         // that was forcing full view recreation on every Core Data save.
         // @FetchRequest already observes Core Data changes automatically,
         // and the forced refresh was causing scroll position reset.
-        // Cmd+A to select all books
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+        // Cmd+A to select all books (unless typing in a text field)
+        .onAppear {
+            guard !hasKeyMonitor else { return }
+            hasKeyMonitor = true
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "a" {
+                    if let responder = event.window?.firstResponder as? NSTextView, responder.isFieldEditor {
+                        return event
+                    }
                     selectAllBooks()
                     return nil // Consume the event
                 }
@@ -513,7 +524,9 @@ struct ContentView: View {
                             isMultiSelectMode: $isMultiSelectMode,
                             libraryService: libraryService,
                             kindleDevices: Array(kindleDevices),
-                            viewContext: viewContext
+                            viewContext: viewContext,
+                            isSendingToKindle: $isSendingToKindle,
+                            sendToKindleStatus: $sendToKindleStatus
                         )
                     case .table:
                         BookTableView(
@@ -526,7 +539,9 @@ struct ContentView: View {
                             sortAscending: $sortAscending,
                             libraryService: libraryService,
                             kindleDevices: Array(kindleDevices),
-                            viewContext: viewContext
+                            viewContext: viewContext,
+                            isSendingToKindle: $isSendingToKindle,
+                            sendToKindleStatus: $sendToKindleStatus
                         )
                     }
                 }
@@ -625,9 +640,7 @@ struct ContentView: View {
 
     private func batchConvert(to format: String) async {
         let booksToConvert = selectedBookObjects
-        let conversionService = CalibreConversionService.shared
-
-        guard conversionService.isCalibreAvailable else {
+        guard libraryService.isCalibreAvailable else {
             conversionAlertMessage = "Calibre is not installed. Please install Calibre to convert ebooks."
             showingConversionAlert = true
             return
@@ -646,7 +659,7 @@ struct ContentView: View {
             }
 
             do {
-                let outputURL = try await conversionService.convert(fileURL, to: format)
+                let outputURL = try await libraryService.convertBook(at: fileURL, to: format)
 
                 // Add the converted book to library
                 await MainActor.run {
@@ -692,10 +705,32 @@ struct ContentView: View {
         var successCount = 0
         var failCount = 0
 
+        await MainActor.run {
+            isSendingToKindle = true
+            sendToKindleStatus = "Sending \(booksToSend.count) book(s) to \(device.name ?? "Kindle")..."
+            ToastNotificationManager.shared.showProgress(
+                title: "Sending to Kindle",
+                message: sendToKindleStatus
+            )
+        }
+        defer {
+            Task { @MainActor in
+                isSendingToKindle = false
+                sendToKindleStatus = ""
+            }
+        }
+
         for book in booksToSend {
             guard let fileURL = book.fileURL else { continue }
 
             do {
+                await MainActor.run {
+                    sendToKindleStatus = "Sending \(book.title ?? "Book") to \(device.name ?? "Kindle")..."
+                    ToastNotificationManager.shared.showProgress(
+                        title: "Sending to Kindle",
+                        message: sendToKindleStatus
+                    )
+                }
                 let result = try await sendService.send(
                     fileURL: fileURL,
                     to: kindleEmail,
@@ -720,8 +755,12 @@ struct ContentView: View {
         }
 
         await MainActor.run {
-            conversionAlertMessage = "Sent \(successCount) book(s) to Kindle. \(failCount > 0 ? "\(failCount) failed." : "")"
-            showingConversionAlert = true
+            let summary = "Sent \(successCount) book(s) to Kindle. \(failCount > 0 ? "\(failCount) failed." : "")"
+            ToastNotificationManager.shared.show(
+                title: failCount > 0 ? "Send Complete with Errors" : "Sent to Kindle",
+                message: summary,
+                isError: successCount == 0
+            )
             selectedBooks.removeAll()
             isMultiSelectMode = false
         }

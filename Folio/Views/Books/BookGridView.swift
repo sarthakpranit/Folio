@@ -37,6 +37,8 @@ struct BookGridView: View {
     let libraryService: LibraryService
     let kindleDevices: [KindleDevice]
     let viewContext: NSManagedObjectContext
+    @Binding var isSendingToKindle: Bool
+    @Binding var sendToKindleStatus: String
     @State private var showingBookDetail: Book?
     @State private var showingGroupDetail: BookGroup?
     @State private var showingEditFor: BookGroup?
@@ -66,6 +68,10 @@ struct BookGridView: View {
                         libraryService: libraryService,
                         kindleDevices: kindleDevices,
                         viewContext: viewContext,
+                        allBooks: books,
+                        selectedBooks: $selectedBooks,
+                        isSendingToKindle: $isSendingToKindle,
+                        sendToKindleStatus: $sendToKindleStatus,
                         showingDetailFor: $showingGroupDetail,
                         showingEditFor: $showingEditFor
                     )
