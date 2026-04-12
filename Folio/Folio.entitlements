@@ -33,5 +33,14 @@
     <!-- Allow storing security-scoped bookmarks for persistent file access -->
     <key>com.apple.security.files.bookmarks.app-scope</key>
     <true/>
+
+    <!-- Allow Calibre's embedded Python mimetypes module to read system MIME maps during conversion -->
+    <key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+    <array>
+        <string>/etc/mime.types</string>
+        <string>/private/etc/mime.types</string>
+        <string>/etc/apache2/mime.types</string>
+        <string>/private/etc/apache2/mime.types</string>
+    </array>
 </dict>
 </plist>

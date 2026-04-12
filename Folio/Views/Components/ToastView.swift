@@ -22,6 +22,10 @@ import SwiftUI
 struct ToastView: View {
     @ObservedObject var manager: ToastNotificationManager
 
+    private var showsCopyAction: Bool {
+        !manager.message.isEmpty
+    }
+
     var body: some View {
         if manager.isShowing {
             VStack {
@@ -44,13 +48,29 @@ struct ToastView: View {
                         Text(manager.title)
                             .font(.headline)
                             .id("title-\(manager.title)")
-                        Text(manager.message)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .id("message-\(manager.message)")
+                        ScrollView(.vertical, showsIndicators: manager.isError) {
+                            Text(manager.message)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .id("message-\(manager.message)")
+                        }
+                        .frame(maxHeight: manager.isError ? 140 : 44)
                     }
 
                     Spacer()
+
+                    if showsCopyAction {
+                        Button {
+                            manager.copyCurrentToast()
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Copy toast text")
+                    }
 
                     Button {
                         manager.dismiss()
@@ -66,6 +86,7 @@ struct ToastView: View {
                 .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
                 .padding(.horizontal)
                 .padding(.bottom, 20)
+                .frame(maxWidth: 560)
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .animation(.spring(response: 0.3), value: manager.isShowing)

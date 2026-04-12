@@ -670,7 +670,7 @@ struct ContentView: View {
                 // Add the converted book to library
                 await MainActor.run {
                     do {
-                        try libraryService.addBook(from: outputURL)
+                        try libraryService.addConvertedBook(from: outputURL, basedOn: book)
                         successCount += 1
                     } catch {
                         failCount += 1

@@ -261,12 +261,22 @@ public final class CalibreConversionService: @unchecked Sendable {
 
         // Check exit code
         if result.exitCode != 0 {
-            throw ConversionError.processFailed(exitCode: result.exitCode, stderr: result.stderr)
+            throw ConversionError.processFailed(
+                exitCode: result.exitCode,
+                stderr: Self.combinedProcessOutput(stdout: result.stdout, stderr: result.stderr)
+            )
         }
 
         // Verify output was created
         guard FileManager.default.fileExists(atPath: outputURL.path) else {
-            throw ConversionError.processFailed(exitCode: result.exitCode, stderr: "Output file was not created")
+            throw ConversionError.processFailed(
+                exitCode: result.exitCode,
+                stderr: Self.combinedProcessOutput(
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    fallback: "Output file was not created"
+                )
+            )
         }
 
         logger.info("Conversion complete: \(outputURL.lastPathComponent)")
@@ -313,7 +323,7 @@ public final class CalibreConversionService: @unchecked Sendable {
                     if process.terminationStatus != 0 {
                         continuation.resume(throwing: ConversionError.processFailed(
                             exitCode: process.terminationStatus,
-                            stderr: stderr
+                            stderr: Self.combinedProcessOutput(stdout: stdout, stderr: stderr)
                         ))
                         return
                     }
@@ -433,15 +443,45 @@ public final class CalibreConversionService: @unchecked Sendable {
             args.append(contentsOf: ["--jpeg-quality", String(options.quality)])
         }
 
-        // Preserve metadata option
-        if options.preserveEmbeddedMetadata {
-            args.append("--read-metadata-from-opf")
-        }
+        // Preserve metadata is the default behavior for ebook-convert.
 
         // Add any additional arguments
         args.append(contentsOf: options.additionalArguments)
 
         return args
+    }
+
+    private static func combinedProcessOutput(stdout: String, stderr: String, fallback: String? = nil) -> String {
+        let trimmedStdout = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedStderr = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !trimmedStderr.isEmpty && trimmedStdout.isEmpty {
+            return trimmedStderr
+        }
+
+        if trimmedStderr.isEmpty && !trimmedStdout.isEmpty {
+            return trimmedStdout
+        }
+
+        if !trimmedStderr.isEmpty && trimmedStdout == trimmedStderr {
+            return trimmedStderr
+        }
+
+        if !trimmedStderr.isEmpty || !trimmedStdout.isEmpty {
+            var sections: [String] = []
+
+            if !trimmedStderr.isEmpty {
+                sections.append("stderr:\n\(trimmedStderr)")
+            }
+
+            if !trimmedStdout.isEmpty {
+                sections.append("stdout:\n\(trimmedStdout)")
+            }
+
+            return sections.joined(separator: "\n\n")
+        }
+
+        return fallback ?? "The conversion process failed without any diagnostic output."
     }
 
     /// Thread-safe string buffer for concurrent access

@@ -535,13 +535,10 @@ struct BookGroupContextMenuContent: View {
 
         do {
             let outputURL = try await libraryService.convertBook(at: accessibleURL, to: format)
-            let result = await libraryService.importBooks(from: [outputURL])
-
-            if result.imported > 0 {
-                showNotification(title: "Converted", message: "Created \(format.uppercased()) version")
-            } else {
-                showNotification(title: "Import Failed", message: result.errors.first ?? "Unknown error", isError: true)
+            try await MainActor.run {
+                _ = try libraryService.addConvertedBook(from: outputURL, basedOn: group.primaryBook)
             }
+            showNotification(title: "Converted", message: "Created \(format.uppercased()) version")
         } catch {
             showNotification(title: "Conversion Failed", message: error.localizedDescription, isError: true)
         }
@@ -933,14 +930,10 @@ struct BookGroupContextMenu: View {
         do {
             let outputURL = try await libraryService.convertBook(at: accessibleURL, to: format)
 
-            // Import the converted file into the library
-            let result = await libraryService.importBooks(from: [outputURL])
-
-            if result.imported > 0 {
-                showNotification(title: "Converted", message: "Created \(format.uppercased()) version")
-            } else {
-                showNotification(title: "Import Failed", message: result.errors.first ?? "Unknown error", isError: true)
+            try await MainActor.run {
+                _ = try libraryService.addConvertedBook(from: outputURL, basedOn: group.primaryBook)
             }
+            showNotification(title: "Converted", message: "Created \(format.uppercased()) version")
         } catch {
             showNotification(title: "Conversion Failed", message: error.localizedDescription, isError: true)
         }

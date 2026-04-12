@@ -22,6 +22,7 @@
 
 import SwiftUI
 import Combine
+import AppKit
 
 /// Manages toast-style notifications for user feedback
 @MainActor
@@ -43,10 +44,15 @@ class ToastNotificationManager: ObservableObject {
         self.isProgress = false
         self.isShowing = true
 
-        // Auto-dismiss after delay
         dismissTask?.cancel()
+
+        // Keep errors visible until explicitly dismissed so users can inspect/copy details.
+        guard !isError else {
+            return
+        }
+
         dismissTask = Task {
-            try? await Task.sleep(nanoseconds: isError ? 4_000_000_000 : 3_000_000_000)
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
             if !Task.isCancelled {
                 self.isShowing = false
             }
@@ -67,5 +73,16 @@ class ToastNotificationManager: ObservableObject {
     func dismiss() {
         dismissTask?.cancel()
         isShowing = false
+    }
+
+    func copyCurrentToast() {
+        let content = [title, message]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+
+        guard !content.isEmpty else { return }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(content, forType: .string)
     }
 }

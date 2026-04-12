@@ -27,7 +27,6 @@ import Foundation
 import CoreData
 import Combine
 import SwiftUI
-import UniformTypeIdentifiers
 import OSLog
 import FolioCore
 
@@ -148,7 +147,7 @@ class LibraryService: ObservableObject {
 
     /// Add a single book to the library
     @discardableResult
-    func addBook(from fileURL: URL, shouldCopy: Bool = false) throws -> Book {
+    func addBook(from fileURL: URL, shouldCopy _: Bool = false) throws -> Book {
         let parsed = filenameParser.parse(fileURL.lastPathComponent)
         let sortTitle = repository.generateSortTitle(parsed.title)
 
@@ -163,6 +162,58 @@ class LibraryService: ObservableObject {
         objectWillChange.send()
 
         print("Added book: \(book.title ?? "Unknown")")
+        return book
+    }
+
+    /// Add a converted format variant and preserve the source book's metadata
+    /// so the new format stays grouped with the original.
+    @discardableResult
+    func addConvertedBook(from fileURL: URL, basedOn sourceBook: Book) throws -> Book {
+        let sourceTitle = sourceBook.title ?? filenameParser.parse(fileURL.lastPathComponent).title
+        let sourceSortTitle = sourceBook.sortTitle ?? repository.generateSortTitle(sourceTitle)
+        let sourceAuthorName = (sourceBook.authors as? Set<Author>)?
+            .compactMap(\.name)
+            .sorted()
+            .first
+
+        let book = try repository.add(
+            from: fileURL,
+            title: sourceTitle,
+            sortTitle: sourceSortTitle,
+            authorName: sourceAuthorName
+        )
+
+        book.title = sourceBook.title
+        book.sortTitle = sourceBook.sortTitle
+        book.isbn = sourceBook.isbn
+        book.isbn13 = sourceBook.isbn13
+        book.publisher = sourceBook.publisher
+        book.summary = sourceBook.summary
+        book.pageCount = sourceBook.pageCount
+        book.language = sourceBook.language
+        book.publishedDate = sourceBook.publishedDate
+        book.coverImageURL = sourceBook.coverImageURL
+        book.coverImageData = sourceBook.coverImageData
+        book.series = sourceBook.series
+        book.seriesIndex = sourceBook.seriesIndex
+
+        book.authors = nil
+        if let authors = sourceBook.authors as? Set<Author> {
+            for author in authors {
+                book.addToAuthors(author)
+            }
+        }
+
+        if let tags = sourceBook.tags as? Set<Tag> {
+            for tag in tags {
+                book.addToTags(tag)
+            }
+        }
+
+        try book.managedObjectContext?.save()
+        loadAll()
+        objectWillChange.send()
+
         return book
     }
 
@@ -593,7 +644,89 @@ class LibraryService: ObservableObject {
 
     /// Convert a book file to a target format using Calibre
     func convertBook(at url: URL, to format: String, options: ConversionOptions = .default) async throws -> URL {
-        try await CalibreConversionService.shared.convert(url, to: format, options: options)
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let stagedInputURL = try stageConversionInput(from: url)
+        let stagingDirectory = stagedInputURL.deletingLastPathComponent()
+
+        defer {
+            try? FileManager.default.removeItem(at: stagingDirectory)
+        }
+
+        var stagedOptions = options
+        stagedOptions.outputDirectory = stagingDirectory
+
+        let stagedOutputURL = try await CalibreConversionService.shared.convert(
+            stagedInputURL,
+            to: format,
+            options: stagedOptions
+        )
+
+        return try materializeConvertedBook(
+            from: stagedOutputURL,
+            originalInputURL: url,
+            options: options
+        )
+    }
+
+    private func stageConversionInput(from url: URL) throws -> URL {
+        let stagingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("folio-conversion-\(UUID().uuidString)", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+
+        let stagedInputURL = stagingDirectory.appendingPathComponent(url.lastPathComponent)
+        try FileManager.default.copyItem(at: url, to: stagedInputURL)
+        return stagedInputURL
+    }
+
+    private func materializeConvertedBook(
+        from stagedOutputURL: URL,
+        originalInputURL: URL,
+        options: ConversionOptions
+    ) throws -> URL {
+        let destinationDirectory = options.outputDirectory ?? originalInputURL.deletingLastPathComponent()
+        let accessing = destinationDirectory.startAccessingSecurityScopedResource()
+
+        defer {
+            if accessing {
+                destinationDirectory.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let preferredOutputURL = destinationDirectory.appendingPathComponent(stagedOutputURL.lastPathComponent)
+        let finalOutputURL = uniqueOutputURL(for: preferredOutputURL)
+        try FileManager.default.copyItem(at: stagedOutputURL, to: finalOutputURL)
+        return finalOutputURL
+    }
+
+    private func uniqueOutputURL(for url: URL) -> URL {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return url
+        }
+
+        let directory = url.deletingLastPathComponent()
+        let basename = url.deletingPathExtension().lastPathComponent
+        let pathExtension = url.pathExtension
+
+        for index in 2...1000 {
+            let candidate = directory
+                .appendingPathComponent("\(basename) (\(index))")
+                .appendingPathExtension(pathExtension)
+
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
+        return directory
+            .appendingPathComponent("\(basename)-\(UUID().uuidString)")
+            .appendingPathExtension(pathExtension)
     }
 }
 
