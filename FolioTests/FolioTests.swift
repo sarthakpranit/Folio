@@ -200,21 +200,21 @@ struct DuplicateDetectionTests {
         #expect(result == nil)
     }
 
-    @Test("Find duplicate matches by exact filename")
+    @Test("Find duplicate matches URI fileURL by filename without a predicate exception")
     @MainActor
     func testFindDuplicateByFilename() async throws {
         let (repository, context) = makeRepository()
 
-        // Create a book with a known filename
+        // The duplicate contract is filename-based, not full-URL-based.
         let book = Book(context: context)
         book.id = UUID()
         book.title = "Existing Book"
         book.sortTitle = "existing book"
-        book.fileURL = URL(string: "file:///path/to/MyBook.epub")
+        book.fileURL = URL(fileURLWithPath: "/Volumes/Library/Existing/MyBook.epub")
         book.dateAdded = Date()
         try context.save()
 
-        // Search for duplicate by same filename
+        // This used to evaluate CONTAINS against the URI-valued fileURL and crash.
         let result = repository.findDuplicate(
             filename: "MyBook.epub",
             title: "Different Title",

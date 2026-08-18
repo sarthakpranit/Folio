@@ -80,13 +80,15 @@ class BookRepository {
         // Guard against empty filename or title
         guard !filename.isEmpty else { return nil }
 
-        // Check 1: Same filename already in library
-        // fileURL is a URI attribute — use CONTAINS on the string representation
+        // Check 1: Same filename already in library.
+        // fileURL is a URI attribute, so string predicates such as CONTAINS are
+        // invalid. Compare the path component after fetching the URI values.
         let filenameRequest = Book.fetchRequest()
-        filenameRequest.predicate = NSPredicate(format: "fileURL CONTAINS[c] %@", filename)
-        filenameRequest.fetchLimit = 1
+        filenameRequest.fetchBatchSize = 100
 
-        if let match = try? viewContext.fetch(filenameRequest).first {
+        if let match = try? viewContext.fetch(filenameRequest).first(where: {
+            $0.fileURL?.lastPathComponent.caseInsensitiveCompare(filename) == .orderedSame
+        }) {
             return match
         }
 
