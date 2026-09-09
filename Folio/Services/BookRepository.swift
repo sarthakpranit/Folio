@@ -25,14 +25,17 @@
 
 import Foundation
 import CoreData
+import FolioCore
 
 /// Repository for book persistence operations
 @MainActor
 class BookRepository {
     private let viewContext: NSManagedObjectContext
 
-    /// Supported ebook file extensions
-    let supportedExtensions = ["epub", "mobi", "azw3", "pdf", "cbz", "cbr", "fb2", "rtf"]
+    /// Supported ebook file extensions — the single source is FolioCore's
+    /// `EbookFormat` (#82). Previously a divergent literal that omitted
+    /// lit/pdb/txt/docx.
+    let supportedExtensions = EbookFormat.fileExtensions
 
     init(context: NSManagedObjectContext) {
         self.viewContext = context
@@ -332,7 +335,7 @@ class BookRepository {
     // MARK: - Helpers
 
     func isValidEbookFile(_ url: URL) -> Bool {
-        supportedExtensions.contains(url.pathExtension.lowercased())
+        url.isEbookFile
     }
 
     private func getFileSize(_ url: URL) -> Int64 {
@@ -343,19 +346,11 @@ class BookRepository {
         return size
     }
 
-    /// Generate a sort-friendly title by removing leading articles
+    /// Generate a sort-friendly title by removing leading articles.
+    /// Delegates to FolioCore's tested `String.sortableTitle` (#58) — this was a
+    /// second copy of the same logic.
     func generateSortTitle(_ title: String) -> String {
-        let articles = ["the ", "a ", "an "]
-        var result = title.lowercased()
-
-        for article in articles {
-            if result.hasPrefix(article) {
-                result = String(result.dropFirst(article.count))
-                break
-            }
-        }
-
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        title.sortableTitle
     }
 
     private func generateSortName(_ name: String) -> String {
