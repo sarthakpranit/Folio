@@ -162,6 +162,19 @@ public final class CalibreConversionService: @unchecked Sendable {
         "/usr/bin/ebook-meta"
     ]
 
+    /// Hard ceiling on a single `ebook-convert` run. A wedged Calibre process
+    /// (pathological PDF, Calibre bug, disk stall) is terminated rather than
+    /// awaited forever (#74). Matches the HTTP transfer path's 5-minute guard.
+    private static let conversionTimeout: DispatchTimeInterval = .seconds(300)
+
+    /// Hard ceiling on an `ebook-meta` run. Metadata extraction is near-instant;
+    /// this only exists to bound a child that never exits — e.g. one blocked
+    /// writing more than a pipe buffer's worth of output (#73).
+    private static let metadataTimeout: DispatchTimeInterval = .seconds(30)
+
+    /// Queue the process-timeout timers fire on.
+    private static let processTimeoutQueue = DispatchQueue(label: "com.folio.calibre.process-timeout")
+
     // MARK: - Initialization
 
     public init() {
@@ -310,28 +323,78 @@ public final class CalibreConversionService: @unchecked Sendable {
         process.standardError = stderrPipe
 
         return try await withCheckedThrowingContinuation { continuation in
+            // Drain both pipes while the process runs. The previous version only
+            // read in the termination handler, so an `ebook-meta` emitting more
+            // than a pipe buffer (~64 KB — a book with a very long description or
+            // many subjects) would block on write(), never exit, and hang this
+            // await forever (#73).
+            let stdoutBuffer = OutputBuffer()
+            let stderrBuffer = OutputBuffer()
+            let resumeGuard = ResumeOnce()
+
+            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+                if let output = String(data: data, encoding: .utf8) {
+                    stdoutBuffer.append(output)
+                }
+            }
+            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+                if let output = String(data: data, encoding: .utf8) {
+                    stderrBuffer.append(output)
+                }
+            }
+
+            // Bound a child that never exits regardless of the drain above (#73).
+            let timeoutTimer = DispatchSource.makeTimerSource(queue: Self.processTimeoutQueue)
+            timeoutTimer.schedule(deadline: .now() + Self.metadataTimeout)
+            timeoutTimer.setEventHandler {
+                guard resumeGuard.claim() else { return }
+                process.terminate()
+                continuation.resume(throwing: ConversionError.conversionTimeout)
+            }
+
+            process.terminationHandler = { _ in
+                timeoutTimer.cancel()
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+                let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                if let output = String(data: remainingStdout, encoding: .utf8) {
+                    stdoutBuffer.append(output)
+                }
+                if let output = String(data: remainingStderr, encoding: .utf8) {
+                    stderrBuffer.append(output)
+                }
+
+                guard resumeGuard.claim() else { return } // timeout already resolved this call
+
+                let stdout = stdoutBuffer.value
+                let stderr = stderrBuffer.value
+
+                if process.terminationStatus != 0 {
+                    continuation.resume(throwing: ConversionError.processFailed(
+                        exitCode: process.terminationStatus,
+                        stderr: Self.combinedProcessOutput(stdout: stdout, stderr: stderr)
+                    ))
+                    return
+                }
+
+                let metadata = self.parseMetadata(from: stdout, fileURL: fileURL)
+                continuation.resume(returning: metadata)
+            }
+
             do {
                 try process.run()
-
-                process.terminationHandler = { _ in
-                    let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                    let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-
-                    let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-                    let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-
-                    if process.terminationStatus != 0 {
-                        continuation.resume(throwing: ConversionError.processFailed(
-                            exitCode: process.terminationStatus,
-                            stderr: Self.combinedProcessOutput(stdout: stdout, stderr: stderr)
-                        ))
-                        return
-                    }
-
-                    let metadata = self.parseMetadata(from: stdout, fileURL: fileURL)
-                    continuation.resume(returning: metadata)
-                }
+                timeoutTimer.resume()
             } catch {
+                timeoutTimer.cancel()
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                guard resumeGuard.claim() else { return }
                 continuation.resume(throwing: ConversionError.processFailed(
                     exitCode: -1,
                     stderr: error.localizedDescription
@@ -499,6 +562,22 @@ public final class CalibreConversionService: @unchecked Sendable {
         }
     }
 
+    /// One-shot guard for a process continuation that can be completed by the
+    /// termination handler *or* the timeout timer — never both.
+    private final class ResumeOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private var hasResumed = false
+
+        /// Returns `true` for the first caller only; every later caller gets `false`.
+        func claim() -> Bool {
+            lock.withLock {
+                guard !hasResumed else { return false }
+                hasResumed = true
+                return true
+            }
+        }
+    }
+
     /// Run a process and capture output with progress tracking
     private func runProcess(
         executablePath: String,
@@ -523,6 +602,19 @@ public final class CalibreConversionService: @unchecked Sendable {
             let stdoutBuffer = OutputBuffer()
             let stderrBuffer = OutputBuffer()
 
+            let resumeGuard = ResumeOnce()
+
+            // Timeout: a wedged `ebook-convert` otherwise hangs this await, and the
+            // calling Task with it, forever (#74). On expiry, terminate the process
+            // and fail; the termination handler that follows sees the guard is spent.
+            let timeoutTimer = DispatchSource.makeTimerSource(queue: Self.processTimeoutQueue)
+            timeoutTimer.schedule(deadline: .now() + Self.conversionTimeout)
+            timeoutTimer.setEventHandler {
+                guard resumeGuard.claim() else { return }
+                process.terminate()
+                continuation.resume(throwing: ConversionError.conversionTimeout)
+            }
+
             // Handle stdout for progress parsing
             stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
                 let data = handle.availableData
@@ -545,6 +637,8 @@ public final class CalibreConversionService: @unchecked Sendable {
             }
 
             process.terminationHandler = { _ in
+                timeoutTimer.cancel()
+
                 // Clean up handlers
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
@@ -560,6 +654,8 @@ public final class CalibreConversionService: @unchecked Sendable {
                     stderrBuffer.append(output)
                 }
 
+                guard resumeGuard.claim() else { return } // timeout already resolved this call
+
                 continuation.resume(returning: (
                     exitCode: process.terminationStatus,
                     stdout: stdoutBuffer.value,
@@ -569,7 +665,10 @@ public final class CalibreConversionService: @unchecked Sendable {
 
             do {
                 try process.run()
+                timeoutTimer.resume()
             } catch {
+                timeoutTimer.cancel()
+                guard resumeGuard.claim() else { return }
                 continuation.resume(throwing: ConversionError.processFailed(
                     exitCode: -1,
                     stderr: error.localizedDescription
