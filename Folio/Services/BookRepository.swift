@@ -214,7 +214,6 @@ class BookRepository {
         }
 
         try viewContext.save()
-        viewContext.refreshAllObjects()
 
         return book
     }
