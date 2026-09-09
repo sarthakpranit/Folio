@@ -16,23 +16,11 @@ public typealias PlatformImage = UIImage
 // MARK: - QR Code Generator
 
 /// Generates QR codes for Folio server URLs
-/// Uses Core Image's built-in QR code generator
-public final class QRCodeGenerator {
-
-    // MARK: - Properties
-
-    /// Shared instance
-    public static let shared = QRCodeGenerator()
-
-    /// CIContext for rendering
-    private let context = CIContext()
-
-    /// The QR code filter
-    private let qrFilter = CIFilter.qrCodeGenerator()
-
-    // MARK: - Initialization
-
-    private init() {}
+/// Uses Core Image's built-in QR code generator.
+///
+/// A namespace of stateless functions: `CIFilter` and `CIContext` are created
+/// per call so concurrent callers never race on shared filter inputs.
+public enum QRCodeGenerator {
 
     // MARK: - Public Methods
 
@@ -42,13 +30,16 @@ public final class QRCodeGenerator {
     ///   - size: The desired size of the output image (default: 200x200)
     ///   - correctionLevel: Error correction level (L, M, Q, H) - default is M
     /// - Returns: Platform-specific image (NSImage on macOS, UIImage on iOS)
-    public func generate(from urlString: String, size: CGFloat = 200, correctionLevel: CorrectionLevel = .medium) -> PlatformImage? {
+    public static func generate(from urlString: String, size: CGFloat = 200, correctionLevel: CorrectionLevel = .medium) -> PlatformImage? {
         guard let data = urlString.data(using: .utf8) else {
             logger.error("Failed to encode URL string to data")
             return nil
         }
 
-        // Configure the filter
+        let context = CIContext()
+
+        // Configure a fresh filter for this call
+        let qrFilter = CIFilter.qrCodeGenerator()
         qrFilter.message = data
         qrFilter.correctionLevel = correctionLevel.rawValue
 
@@ -86,7 +77,7 @@ public final class QRCodeGenerator {
     ///   - foregroundColor: Color of the QR code modules (default: black)
     ///   - backgroundColor: Background color (default: white)
     /// - Returns: Styled QR code image
-    public func generateStyled(
+    public static func generateStyled(
         from urlString: String,
         size: CGFloat = 200,
         foregroundColor: CIColor = CIColor.black,
@@ -96,7 +87,10 @@ public final class QRCodeGenerator {
             return nil
         }
 
-        // Generate base QR code
+        let context = CIContext()
+
+        // Generate base QR code with a fresh filter
+        let qrFilter = CIFilter.qrCodeGenerator()
         qrFilter.message = data
         qrFilter.correctionLevel = CorrectionLevel.medium.rawValue
 
@@ -136,7 +130,7 @@ public final class QRCodeGenerator {
     ///   - urlString: The URL to encode
     ///   - size: Output size
     /// - Returns: PNG data of the QR code
-    public func generatePNGData(from urlString: String, size: CGFloat = 200) -> Data? {
+    public static func generatePNGData(from urlString: String, size: CGFloat = 200) -> Data? {
         guard let image = generate(from: urlString, size: size) else {
             return nil
         }
@@ -183,7 +177,7 @@ extension QRCodeGenerator {
     ///   - urlString: The URL to encode
     ///   - size: Output size
     /// - Returns: NSImage ready for SwiftUI
-    public func generateForSwiftUI(from urlString: String, size: CGFloat = 200) -> NSImage? {
+    public static func generateForSwiftUI(from urlString: String, size: CGFloat = 200) -> NSImage? {
         generate(from: urlString, size: size)
     }
 }
