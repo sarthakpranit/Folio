@@ -412,7 +412,7 @@ struct BookGroupContextMenuContent: View {
         // Convert to different format (requires Calibre)
         Menu("Convert to...") {
             let currentFormat = group.primaryBook.format?.lowercased() ?? ""
-            ForEach(["epub", "mobi", "pdf", "azw3"], id: \.self) { format in
+            ForEach(CalibreConversionService.supportedOutputFormats.sorted(), id: \.self) { format in
                 Button(format.uppercased()) {
                     Task { await convertBook(to: format) }
                 }
@@ -657,7 +657,7 @@ struct BookGroupContextMenu: View {
         // Convert to different format (requires Calibre)
         Menu("Convert to...") {
             let currentFormat = group.primaryBook.format?.lowercased() ?? ""
-            ForEach(["epub", "mobi", "pdf", "azw3"], id: \.self) { format in
+            ForEach(CalibreConversionService.supportedOutputFormats.sorted(), id: \.self) { format in
                 Button(format.uppercased()) {
                     Task { await convertBook(to: format) }
                 }
