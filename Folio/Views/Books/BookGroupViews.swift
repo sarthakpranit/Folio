@@ -307,8 +307,9 @@ struct BookGroupGridItemView: View {
     private func fetchCoverImage(from url: URL) async {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
+            guard let cover = CoverImageStore.processedForStorage(data) else { return }
             await MainActor.run {
-                primaryBook.coverImageData = data
+                primaryBook.coverImageData = cover
                 try? primaryBook.managedObjectContext?.save()
             }
         } catch {
@@ -896,9 +897,10 @@ struct BookGroupContextMenu: View {
                     if let coverURL = metadata.coverImageURL {
                         primaryBook.coverImageURL = coverURL
                         Task {
-                            if let (data, _) = try? await URLSession.shared.data(from: coverURL) {
+                            if let (data, _) = try? await URLSession.shared.data(from: coverURL),
+                               let cover = CoverImageStore.processedForStorage(data) {
                                 await MainActor.run {
-                                    primaryBook.coverImageData = data
+                                    primaryBook.coverImageData = cover
                                     try? primaryBook.managedObjectContext?.save()
                                 }
                             }
@@ -1352,8 +1354,9 @@ struct BookGroupDetailView: View {
     private func fetchCoverImage(from url: URL) async {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
+            guard let cover = CoverImageStore.processedForStorage(data) else { return }
             await MainActor.run {
-                primaryBook.coverImageData = data
+                primaryBook.coverImageData = cover
                 try? primaryBook.managedObjectContext?.save()
             }
         } catch {

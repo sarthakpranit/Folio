@@ -211,7 +211,7 @@ public final class GoogleBooksAPI: MetadataProvider, @unchecked Sendable {
             let preferredSizes = ["extraLarge", "large", "medium", "small", "thumbnail", "smallThumbnail"]
             for size in preferredSizes {
                 if let urlString = imageLinks[size]?.string,
-                   let url = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://")) {
+                   let url = normalizedCoverURL(from: urlString) {
                     coverImageURL = url
                     break
                 }
@@ -238,6 +238,30 @@ public final class GoogleBooksAPI: MetadataProvider, @unchecked Sendable {
             confidence: confidence,
             source: providerName
         )
+    }
+
+    /// Normalise a Google Books `imageLinks` URL before it is stored.
+    ///
+    /// Google returns cover links as `http://` with a page-curl overlay
+    /// (`&edge=curl`) and a `zoom` level that yields a tiny thumbnail. Force
+    /// HTTPS, drop the curl, and pin `zoom=1` so the stored source is the
+    /// largest image this endpoint serves.
+    private func normalizedCoverURL(from urlString: String) -> URL? {
+        guard var components = URLComponents(
+            string: urlString.replacingOccurrences(of: "http://", with: "https://")
+        ) else {
+            return nil
+        }
+
+        if var queryItems = components.queryItems {
+            queryItems.removeAll { $0.name == "edge" }
+            if let zoomIndex = queryItems.firstIndex(where: { $0.name == "zoom" }) {
+                queryItems[zoomIndex].value = "1"
+            }
+            components.queryItems = queryItems
+        }
+
+        return components.url
     }
 
     /// Calculate confidence score based on how well the result matches the search
