@@ -154,7 +154,7 @@ public final class BonjourService: ObservableObject {
         // Start the listener
         listener?.start(queue: queue)
 
-        logger.info("Started Bonjour advertising: \(serviceName) on port \(port)")
+        logger.info("Started Bonjour advertising: \(self.serviceName) on port \(port)")
     }
 
     /// Stop advertising the service

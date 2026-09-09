@@ -110,7 +110,7 @@ public final class HTTPTransferServer: ObservableObject {
         }
 
         guard let port = startedPort else {
-            logger.error("No available port found in range \(portRange)")
+            logger.error("No available port found in range \(self.portRange)")
             throw TransferError.portUnavailable
         }
 
