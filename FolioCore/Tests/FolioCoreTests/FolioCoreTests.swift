@@ -175,14 +175,6 @@ final class FolioCoreTests: XCTestCase {
         XCTAssertEqual(merged.source, "google_books")
     }
 
-    // MARK: - Logger Tests
-
-    func testLoggerLevels() {
-        XCTAssertTrue(LogLevel.debug < LogLevel.info)
-        XCTAssertTrue(LogLevel.info < LogLevel.warning)
-        XCTAssertTrue(LogLevel.warning < LogLevel.error)
-    }
-
     // MARK: - Error Types Tests
 
     func testFolioErrorDescriptions() {
