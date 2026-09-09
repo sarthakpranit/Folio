@@ -331,3 +331,54 @@ struct DuplicateStrategyTests {
         #expect(DuplicateStrategy(rawValue: "invalid") == nil)
     }
 }
+
+// MARK: - deleteAllData Tests
+
+@Suite("deleteAllData Tests")
+struct DeleteAllDataTests {
+
+    @Test("Removes rows from every entity, including KindleDevice")
+    @MainActor
+    func testDeletesAllEntities() async throws {
+        let controller = PersistenceController.inMemory()
+        let context = controller.container.viewContext
+
+        // One row per model entity. KindleDevice matters here: it was absent
+        // from the delete list, so a "reset" silently kept Kindle devices (#46).
+        let book = Book(context: context); book.id = UUID(); book.title = "Dune"
+        let author = Author(context: context); author.id = UUID(); author.name = "Frank Herbert"
+        let series = Series(context: context); series.id = UUID(); series.name = "Dune"
+        let tag = Tag(context: context); tag.id = UUID(); tag.name = "SciFi"
+        let collection = Collection(context: context); collection.id = UUID(); collection.name = "Favourites"
+        let device = KindleDevice(context: context); device.id = UUID(); device.email = "me@kindle.com"
+        try context.save()
+
+        try controller.deleteAllData()
+
+        for entityName in ["Book", "Author", "Series", "Tag", "Collection", "KindleDevice"] {
+            let request = NSFetchRequest<NSFetchRequestResult>(entityName: entityName)
+            let count = try context.count(for: request)
+            #expect(count == 0, "\(entityName) rows should be gone after deleteAllData")
+        }
+    }
+
+    @Test("Invalidates objects already materialised in the context")
+    @MainActor
+    func testInvalidatesLiveObjects() async throws {
+        let controller = PersistenceController.inMemory()
+        let context = controller.container.viewContext
+
+        let book = Book(context: context)
+        book.id = UUID()
+        book.title = "Neuromancer"
+        try context.save()
+
+        // A batch delete bypasses the context; without merging the deleted IDs
+        // this still-live reference would fault-crash on next access (the
+        // stale-object class of bug from R1 / #46). After the merge it must be
+        // marked deleted instead.
+        try controller.deleteAllData()
+
+        #expect(book.isDeleted || book.managedObjectContext == nil)
+    }
+}
