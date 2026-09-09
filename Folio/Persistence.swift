@@ -152,13 +152,30 @@ class PersistenceController: ObservableObject {
     func deleteAllData() throws {
         let context = container.viewContext
 
-        let entities = ["Book", "Author", "Series", "Tag", "Collection"]
+        // Every entity in the model. Omitting one leaves its rows behind —
+        // KindleDevice used to be missing, so "delete all data" kept the
+        // configured Kindle devices (#46).
+        let entities = ["Book", "Author", "Series", "Tag", "Collection", "KindleDevice"]
+
+        var deletedObjectIDs: [NSManagedObjectID] = []
         for entityName in entities {
             let fetchRequest = NSFetchRequest<NSFetchRequestResult>(entityName: entityName)
             let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetchRequest)
-            try container.persistentStoreCoordinator.execute(deleteRequest, with: context)
+            deleteRequest.resultType = .resultTypeObjectIDs
+            let result = try container.persistentStoreCoordinator.execute(deleteRequest, with: context) as? NSBatchDeleteResult
+            if let objectIDs = result?.result as? [NSManagedObjectID] {
+                deletedObjectIDs.append(contentsOf: objectIDs)
+            }
         }
 
-        context.reset()
+        // A batch delete writes straight to the store and never tells the
+        // context, so anything already materialised (e.g. LibraryService.books)
+        // stays live and throws the next time it is touched. Merging the
+        // deleted IDs turns those rows into deleted objects instead of leaving
+        // them dangling (#46) — replaces the old blunt `context.reset()`.
+        NSManagedObjectContext.mergeChanges(
+            fromRemoteContextSave: [NSDeletedObjectsKey: deletedObjectIDs],
+            into: [container.viewContext]
+        )
     }
 }
