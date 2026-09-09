@@ -2,7 +2,7 @@
 // WiFi transfer HTTP server for Folio
 
 import Foundation
-import Swifter
+@preconcurrency import Swifter
 import Combine
 
 // MARK: - Book Provider Protocol
