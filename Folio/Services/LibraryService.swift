@@ -82,11 +82,12 @@ class LibraryService: ObservableObject {
     // MARK: - Initialization
 
     private init() {
-        let context = PersistenceController.shared.container.viewContext
+        let container = PersistenceController.shared.container
+        let context = container.viewContext
 
         self.filenameParser = FilenameParser()
         self.repository = BookRepository(context: context)
-        self.importService = ImportService(repository: repository, parser: filenameParser)
+        self.importService = ImportService(repository: repository, parser: filenameParser, container: container)
         self.searchService = SearchService()
 
         // Forward ImportService state changes
