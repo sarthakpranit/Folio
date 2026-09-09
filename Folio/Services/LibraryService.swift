@@ -51,6 +51,11 @@ class LibraryService: ObservableObject {
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var error: Error?
 
+    /// Set by a scan that finished with books whose files it could not locate.
+    /// A scan never deletes on its own (#81) — the UI presents this for the user
+    /// to keep or remove. Cleared when they respond.
+    @Published var unresolvedMissingFiles: UnresolvedMissingFiles?
+
     // MARK: - Library Folder
 
     @AppStorage("libraryFolderBookmarkData") private var libraryFolderBookmarkData: Data = Data()
@@ -424,47 +429,49 @@ class LibraryService: ObservableObject {
         }
 
         let filesByName = Dictionary(grouping: scannedFiles, by: { $0.lastPathComponent.lowercased() })
+        let scannedPaths = Set(scannedFiles.map { $0.standardizedFileURL.path })
         var claimedPaths = Set<String>()
         var updatedCount = 0
-        var removedBooks: [Book] = []
+        var unmatchedBooks: [Book] = []
 
         for book in missingBooks {
+            // 1. Security-scoped bookmark: resolves a file that was moved or
+            //    renamed within the library folder by its identity, not its
+            //    path (#81). Free — the bookmark is already stored.
+            if let bookmarkURL = resolveBookmarkMatch(for: book, scannedPaths: scannedPaths, claimedPaths: claimedPaths) {
+                applyRematch(book, to: bookmarkURL)
+                updatedCount += 1
+                claimedPaths.insert(bookmarkURL.standardizedFileURL.path)
+                continue
+            }
+
+            // 2. Fallback: same filename, size as a tiebreak. A rename defeats
+            //    this, and a rename + re-save is exactly the case that used to
+            //    destroy the book — hence the bookmark step above and the
+            //    "never delete" handling below.
             guard let filename = book.fileURL?.lastPathComponent.lowercased() else {
-                removedBooks.append(book)
+                unmatchedBooks.append(book)
                 continue
             }
 
-            let candidates = filesByName[filename] ?? []
-            let availableCandidates = candidates.filter { !claimedPaths.contains($0.standardizedFileURL.path) }
-            if availableCandidates.isEmpty {
-                removedBooks.append(book)
-                continue
-            }
-
+            let candidates = (filesByName[filename] ?? []).filter { !claimedPaths.contains($0.standardizedFileURL.path) }
             let matchedURL: URL?
-            if availableCandidates.count == 1 {
-                matchedURL = availableCandidates.first
+            if candidates.isEmpty {
+                matchedURL = nil
+            } else if candidates.count == 1 {
+                matchedURL = candidates.first
             } else if book.fileSize > 0 {
-                matchedURL = availableCandidates.first { fileSize(for: $0) == book.fileSize } ?? availableCandidates.first
+                matchedURL = candidates.first { fileSize(for: $0) == book.fileSize } ?? candidates.first
             } else {
-                matchedURL = availableCandidates.first
+                matchedURL = candidates.first
             }
 
             if let newURL = matchedURL {
-                book.fileURL = newURL
-                book.fileSize = fileSize(for: newURL)
-                book.dateModified = Date()
-                if let bookmarkData = try? newURL.bookmarkData(
-                    options: .withSecurityScope,
-                    includingResourceValuesForKeys: nil,
-                    relativeTo: nil
-                ) {
-                    book.bookmarkData = bookmarkData
-                }
+                applyRematch(book, to: newURL)
                 updatedCount += 1
                 claimedPaths.insert(newURL.standardizedFileURL.path)
             } else {
-                removedBooks.append(book)
+                unmatchedBooks.append(book)
             }
         }
 
@@ -478,8 +485,11 @@ class LibraryService: ObservableObject {
             importResult = await importService.importBooks(from: newFiles)
         }
 
-        if !removedBooks.isEmpty {
-            try? repository.deleteMultiple(removedBooks, deleteFiles: false)
+        // #81: a scan NEVER deletes. Books whose files could not be located keep
+        // every bit of their metadata (tags, series, summary, cover, Kindle
+        // links); the user decides what to do with them via the review prompt.
+        if !unmatchedBooks.isEmpty {
+            unresolvedMissingFiles = UnresolvedMissingFiles(books: unmatchedBooks)
         }
 
         if updatedCount > 0 {
@@ -492,13 +502,13 @@ class LibraryService: ObservableObject {
         let result = LibraryScanResult(
             imported: importResult?.imported ?? 0,
             updated: updatedCount,
-            removed: removedBooks.count,
+            unresolved: unmatchedBooks.count,
             skipped: importResult?.skipped ?? 0,
             failed: importResult?.failed ?? 0
         )
 
         if showToast {
-            if result.imported > 0 || result.updated > 0 || result.removed > 0 {
+            if result.imported > 0 || result.updated > 0 || result.unresolved > 0 {
                 showToastMessage(
                     title: "Library Updated",
                     message: result.summary
@@ -629,6 +639,54 @@ class LibraryService: ObservableObject {
         return size
     }
 
+    /// Try to locate a book's file via its stored security-scoped bookmark.
+    /// A bookmark tracks the file by identity, so it survives a move or rename
+    /// within the library folder (#81). Returns a URL only when it resolves to a
+    /// file the current scan actually found and nothing else has claimed.
+    private func resolveBookmarkMatch(for book: Book, scannedPaths: Set<String>, claimedPaths: Set<String>) -> URL? {
+        guard let data = book.bookmarkData else { return nil }
+
+        var isStale = false
+        guard let resolved = try? URL(
+            resolvingBookmarkData: data,
+            options: [.withSecurityScope],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        ) else { return nil }
+
+        let path = resolved.standardizedFileURL.path
+        guard scannedPaths.contains(path), !claimedPaths.contains(path) else { return nil }
+        return resolved
+    }
+
+    /// Point a book at a newly located file and refresh its derived state.
+    private func applyRematch(_ book: Book, to newURL: URL) {
+        book.fileURL = newURL
+        book.fileSize = fileSize(for: newURL)
+        book.dateModified = Date()
+        if let bookmarkData = try? newURL.bookmarkData(
+            options: .withSecurityScope,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        ) {
+            book.bookmarkData = bookmarkData
+        }
+    }
+
+    /// Remove books the user chose not to keep from the missing-files review.
+    /// Files on disk are never touched (#81).
+    func removeMissingBooks(_ books: [Book]) {
+        guard !books.isEmpty else { return }
+        do {
+            try repository.deleteMultiple(books, deleteFiles: false)
+            loadAll()
+            objectWillChange.send()
+        } catch {
+            logger.error("Failed to remove missing books: \(error.localizedDescription)")
+            showToastMessage(title: "Couldn’t Remove Books", message: error.localizedDescription, isError: true)
+        }
+    }
+
     private func showToastMessage(title: String, message: String, isError: Bool = false) {
         Task { @MainActor in
             ToastNotificationManager.shared.show(title: title, message: message, isError: isError)
@@ -735,7 +793,9 @@ class LibraryService: ObservableObject {
 struct LibraryScanResult {
     let imported: Int
     let updated: Int
-    let removed: Int
+    /// Books whose files the scan could not locate. Not removed — surfaced for
+    /// the user to keep or remove (#81).
+    let unresolved: Int
     let skipped: Int
     let failed: Int
 
@@ -743,11 +803,18 @@ struct LibraryScanResult {
         var parts: [String] = []
         if imported > 0 { parts.append("Imported \(imported)") }
         if updated > 0 { parts.append("Updated \(updated) paths") }
-        if removed > 0 { parts.append("Removed \(removed) missing") }
+        if unresolved > 0 { parts.append("\(unresolved) missing file\(unresolved == 1 ? "" : "s")") }
         if skipped > 0 { parts.append("\(skipped) skipped") }
         if failed > 0 { parts.append("\(failed) failed") }
         return parts.isEmpty ? "No changes" : parts.joined(separator: ", ")
     }
+}
+
+/// Carries the books from a scan that could not find their files through to the
+/// review sheet. Identifiable so it can drive `.sheet(item:)` (#81).
+struct UnresolvedMissingFiles: Identifiable {
+    let id = UUID()
+    let books: [Book]
 }
 
 struct ImportResult {

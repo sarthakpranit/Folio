@@ -490,6 +490,12 @@ struct ContentView: View {
                 SendToKindleView(book: book, kindleDevices: Array(kindleDevices), viewContext: viewContext)
             }
         }
+        .sheet(item: $libraryService.unresolvedMissingFiles) { pending in
+            MissingFilesReviewView(books: pending.books) { booksToRemove in
+                libraryService.removeMissingBooks(booksToRemove)
+                libraryService.unresolvedMissingFiles = nil
+            }
+        }
         .overlay {
             if isConverting {
                 ConversionProgressOverlay(progress: conversionProgress, status: conversionStatus)
