@@ -13,7 +13,14 @@ The project requirements define these release budgets:
 - Search response: under 100 milliseconds.
 - Typical conversion: under 5 seconds for a 500 KB EPUB.
 
-There are currently no automated performance tests for these budgets.
+Measured baseline numbers against these budgets now live in
+[`docs/performance-baseline.md`](performance-baseline.md) (Wayfinder ticket
+[R9 / #38](https://github.com/sarthakpranit/Folio/issues/38)); the throwaway
+harness is the `FolioPerformanceTests` target. Headline: the per-keystroke
+filter+sort+regroup pipeline blows the 100 ms search budget at 5,000 books
+(first keystroke ~147 ms); `findDuplicate` (#42) and the sleep-throttled import
+(#43/#80) scale badly; covers project to ~570 MB in the store (#67). Library
+load, grouping and `SearchService` are within budget at 5k on an M2.
 
 ## Priority map
 
