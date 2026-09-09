@@ -101,11 +101,31 @@ public final class BonjourService: ObservableObject {
     // MARK: - Initialization
 
     public init(serviceName: String? = nil) {
-        self.serviceName = serviceName ?? Host.current().localizedName ?? "Folio Library"
+        self.serviceName = serviceName ?? Self.defaultServiceName()
 
         // Add version info to TXT record
         self.txtRecord["version"] = FolioCoreVersion
-        self.txtRecord["platform"] = "macOS"
+        self.txtRecord["platform"] = Self.platformName
+    }
+
+    /// The host's network name, trimmed of a trailing `.local`. Portable across
+    /// macOS and iOS (unlike `Host.current()`, which is macOS-only in practice).
+    private static func defaultServiceName() -> String {
+        let hostName = ProcessInfo.processInfo.hostName
+        let trimmed = hostName.hasSuffix(".local") ? String(hostName.dropLast(6)) : hostName
+        return trimmed.isEmpty ? "Folio Library" : trimmed
+    }
+
+    /// Platform tag advertised in the TXT record — no longer hardcoded in the
+    /// platform-agnostic core.
+    private static var platformName: String {
+        #if os(macOS)
+        return "macOS"
+        #elseif os(iOS)
+        return "iOS"
+        #else
+        return "unknown"
+        #endif
     }
 
     // MARK: - Public Methods - Advertising

@@ -66,7 +66,7 @@ struct WiFiTransferView: View {
             // reopened while it is already running.
             if transferServer.isRunning, qrCodeImage == nil,
                let url = transferServer.serverURL {
-                qrCodeImage = QRCodeGenerator.shared.generate(from: url, size: 200)
+                qrCodeImage = QRCodeGenerator.generate(from: url, size: 200)
             }
         }
     }
@@ -385,7 +385,7 @@ struct WiFiTransferView: View {
             }
 
             if let url = transferServer.serverURL {
-                qrCodeImage = QRCodeGenerator.shared.generate(from: url, size: 200)
+                qrCodeImage = QRCodeGenerator.generate(from: url, size: 200)
             }
 
         } catch {

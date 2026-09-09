@@ -171,15 +171,6 @@ public final class HTTPTransferServer: ObservableObject {
             return self.handleDownloadRequest(bookId: bookId)
         }
 
-        // Serve cover images
-        server["/api/books/:id/cover"] = { [weak self] request in
-            guard let self = self else {
-                return .internalServerError
-            }
-            let bookId = request.params[":id"] ?? ""
-            return self.handleCoverRequest(bookId: bookId)
-        }
-
         // Kindle-compatible download (converts to MOBI if needed)
         server["/api/books/:id/kindle"] = { [weak self] request in
             guard let self = self else {
@@ -213,6 +204,30 @@ public final class HTTPTransferServer: ObservableObject {
         }
     }
 
+    /// Resolve a book's security-scoped bookmark (if it has one) and begin
+    /// access, falling back to direct access on `fileURL`.
+    /// - Returns: the URL to read from, and whether the caller must call
+    ///   `stopAccessingSecurityScopedResource()` on it when done.
+    private func beginSecurityScopedAccess(fileURL: URL, bookmarkData: Data?) -> (url: URL, started: Bool) {
+        if let bookmarkData {
+            var isStale = false
+            do {
+                let resolved = try URL(
+                    resolvingBookmarkData: bookmarkData,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+                if resolved.startAccessingSecurityScopedResource() {
+                    return (resolved, true)
+                }
+            } catch {
+                logger.warning("Failed to resolve bookmark, using direct access: \(error.localizedDescription)")
+            }
+        }
+        return (fileURL, fileURL.startAccessingSecurityScopedResource())
+    }
+
     /// Handle download request for a specific book
     private func handleDownloadRequest(bookId: String) -> HttpResponse {
         guard let provider = bookProvider else {
@@ -232,39 +247,10 @@ public final class HTTPTransferServer: ObservableObject {
 
         logger.info("Starting download: \(filename)")
 
-        // Try to resolve security-scoped access for external volumes
-        var accessibleURL = fileURL
-        var didStartAccessing = false
-
-        if let bookmarkData = provider.getBookmarkData(id: bookId) {
-            var isStale = false
-            do {
-                let resolvedURL = try URL(
-                    resolvingBookmarkData: bookmarkData,
-                    options: .withSecurityScope,
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                )
-
-                if resolvedURL.startAccessingSecurityScopedResource() {
-                    accessibleURL = resolvedURL
-                    didStartAccessing = true
-                    logger.debug("Using security-scoped access for: \(filename)")
-                }
-            } catch {
-                logger.warning("Failed to resolve bookmark, trying direct access: \(error.localizedDescription)")
-            }
-        }
-
-        // Fallback: try direct access
-        if !didStartAccessing {
-            if fileURL.startAccessingSecurityScopedResource() {
-                didStartAccessing = true
-            }
-        }
-
-        let finalURL = accessibleURL
-        let stopAccess = didStartAccessing
+        let (finalURL, stopAccess) = beginSecurityScopedAccess(
+            fileURL: fileURL,
+            bookmarkData: provider.getBookmarkData(id: bookId)
+        )
 
         // Open the file and read its size for Content-Length before we commit
         // to a 200 response.
@@ -294,13 +280,6 @@ public final class HTTPTransferServer: ObservableObject {
                 logger.info("Download completed: \(filename)")
             }
         )
-    }
-
-    /// Handle cover image request
-    private func handleCoverRequest(bookId: String) -> HttpResponse {
-        // Placeholder - would need cover URL from provider
-        // For now, return a placeholder or 404
-        return .notFound
     }
 
     /// Handle Kindle-compatible download request
@@ -356,33 +335,10 @@ public final class HTTPTransferServer: ObservableObject {
         }
 
         // Need to convert - resolve security-scoped access first
-        var accessibleURL = fileURL
-        var didStartAccessing = false
-
-        if let bookmarkData = provider.getBookmarkData(id: bookId) {
-            var isStale = false
-            do {
-                let resolvedURL = try URL(
-                    resolvingBookmarkData: bookmarkData,
-                    options: .withSecurityScope,
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                )
-
-                if resolvedURL.startAccessingSecurityScopedResource() {
-                    accessibleURL = resolvedURL
-                    didStartAccessing = true
-                }
-            } catch {
-                logger.warning("Failed to resolve bookmark for conversion: \(error.localizedDescription)")
-            }
-        }
-
-        if !didStartAccessing {
-            if fileURL.startAccessingSecurityScopedResource() {
-                didStartAccessing = true
-            }
-        }
+        let (accessibleURL, didStartAccessing) = beginSecurityScopedAccess(
+            fileURL: fileURL,
+            bookmarkData: provider.getBookmarkData(id: bookId)
+        )
 
         guard FileManager.default.fileExists(atPath: accessibleURL.path) else {
             if didStartAccessing {
