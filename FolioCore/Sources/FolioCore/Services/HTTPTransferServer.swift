@@ -307,31 +307,31 @@ public final class HTTPTransferServer: ObservableObject {
         // Check if Calibre is available for conversion
         guard conversionService.isCalibreAvailable else {
             logger.error("Calibre not available for Kindle conversion")
-            return .raw(503, "Service Unavailable", [
-                "Content-Type": "text/html; charset=utf-8"
-            ]) { writer in
-                let html = """
-                <!DOCTYPE html>
-                <html><head><title>Conversion Unavailable</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <style>body{font-family:sans-serif;padding:2rem;text-align:center;background:#1a1a2e;color:#fff;}
-                h1{color:#ff6b6b;}p{color:#ccc;}</style></head>
-                <body><h1>Conversion Unavailable</h1>
-                <p>Calibre is required to convert this book to Kindle format.</p>
-                <p>Please install Calibre on the server or use Send to Kindle instead.</p>
-                </body></html>
-                """
-                try writer.write(Data(html.utf8))
-            }
+            return htmlResponse(503, "Service Unavailable", transferStatusPage(
+                title: "Conversion Unavailable",
+                message: "Calibre is required to convert this book to Kindle format. Install Calibre on the Mac, or use Send to Kindle instead."
+            ))
         }
 
         // Check cache first
         let cacheFilename = "\(bookId).mobi"
         let cachedURL = conversionCacheURL.appendingPathComponent(cacheFilename)
+        let failureMarkerURL = conversionCacheURL.appendingPathComponent("\(bookId).error")
 
         if FileManager.default.fileExists(atPath: cachedURL.path) {
             logger.info("Serving cached Kindle conversion: \(cacheFilename)")
             return serveFile(at: cachedURL, originalTitle: fileURL.deletingPathExtension().lastPathComponent)
+        }
+
+        // A previous background conversion for this book failed. Show it once,
+        // then clear the marker so a fresh request retries.
+        if let reason = try? String(contentsOf: failureMarkerURL, encoding: .utf8) {
+            try? FileManager.default.removeItem(at: failureMarkerURL)
+            return htmlResponse(500, "Conversion Failed", transferStatusPage(
+                title: "Conversion Failed",
+                message: "Folio couldn’t convert this book to a Kindle format. Reload to try again, or use Send to Kindle instead.",
+                detail: reason
+            ))
         }
 
         // Need to convert - resolve security-scoped access first
@@ -348,30 +348,31 @@ public final class HTTPTransferServer: ObservableObject {
             return .notFound
         }
 
-        // Perform synchronous conversion (blocking - not ideal but works for HTTP)
-        logger.info("Converting to MOBI for Kindle: \(originalFilename)")
+        // Kick the conversion off in the background and return immediately (#60).
+        // Blocking this Swifter handler thread on the conversion (previously a
+        // `DispatchSemaphore.wait` for up to 300 s) starved the whole handler
+        // pool — a few concurrent /kindle requests froze plain downloads and the
+        // library page. The conversion writes into the cache; the client is told
+        // to come back, and the auto-refreshing page then hits the cache branch
+        // above and downloads.
+        logger.info("Starting background MOBI conversion for Kindle: \(originalFilename)")
 
-        // Get book metadata for embedding in converted file
         let metadata = provider.getBookMetadata(id: bookId)
         let bookTitle = metadata?.title ?? fileURL.deletingPathExtension().lastPathComponent
         let bookAuthors = metadata?.authors.joined(separator: " & ") ?? ""
+        let cacheDirectory = conversionCacheURL
 
-        Task { @MainActor in
-            self.activeDownloads += 1
-        }
+        Task { @MainActor in self.activeDownloads += 1 }
 
-        // Create a semaphore to wait for async conversion
-        let semaphore = DispatchSemaphore(value: 0)
-        var conversionResult: URL?
-        var conversionError: Error?
-
-        Task {
+        Task.detached { [conversionService] in
+            defer {
+                if didStartAccessing {
+                    accessibleURL.stopAccessingSecurityScopedResource()
+                }
+            }
             do {
                 let baseOptions = ConversionOptions.kindle()
-
-                // Build metadata arguments for Calibre
-                var metadataArgs: [String] = []
-                metadataArgs.append(contentsOf: ["--title", bookTitle])
+                var metadataArgs = ["--title", bookTitle]
                 if !bookAuthors.isEmpty {
                     metadataArgs.append(contentsOf: ["--authors", bookAuthors])
                 }
@@ -383,79 +384,40 @@ public final class HTTPTransferServer: ObservableObject {
                         profile: baseOptions.profile,
                         preserveEmbeddedMetadata: baseOptions.preserveEmbeddedMetadata,
                         quality: baseOptions.quality,
-                        outputDirectory: conversionCacheURL,
+                        outputDirectory: cacheDirectory,
                         additionalArguments: metadataArgs
                     )
                 )
 
-                // Rename to use bookId for caching
-                let finalURL = conversionCacheURL.appendingPathComponent(cacheFilename)
+                let finalURL = cacheDirectory.appendingPathComponent(cacheFilename)
                 if outputURL != finalURL {
                     try? FileManager.default.removeItem(at: finalURL)
                     try FileManager.default.moveItem(at: outputURL, to: finalURL)
                 }
-                conversionResult = finalURL
+                logger.info("Kindle conversion cached: \(cacheFilename)")
             } catch {
-                conversionError = error
+                logger.error("Kindle conversion failed: \(error.localizedDescription)")
+                try? error.localizedDescription.write(
+                    to: cacheDirectory.appendingPathComponent("\(bookId).error"),
+                    atomically: true,
+                    encoding: .utf8
+                )
             }
-
-            if didStartAccessing {
-                accessibleURL.stopAccessingSecurityScopedResource()
-            }
-
-            semaphore.signal()
+            await MainActor.run { [weak self] in self?.activeDownloads -= 1 }
         }
 
-        // Wait for conversion with timeout (5 minutes)
-        let timeout = DispatchTime.now() + .seconds(300)
-        if semaphore.wait(timeout: timeout) == .timedOut {
-            Task { @MainActor in self.activeDownloads -= 1 }
-            logger.error("Kindle conversion timed out")
-            return .raw(504, "Gateway Timeout", [
-                "Content-Type": "text/html; charset=utf-8"
-            ]) { writer in
-                let html = """
-                <!DOCTYPE html>
-                <html><head><title>Conversion Timeout</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <style>body{font-family:sans-serif;padding:2rem;text-align:center;background:#1a1a2e;color:#fff;}
-                h1{color:#ff6b6b;}</style></head>
-                <body><h1>Conversion Timeout</h1>
-                <p>The book conversion took too long. Try a smaller file.</p>
-                </body></html>
-                """
-                try writer.write(Data(html.utf8))
-            }
-        }
+        return htmlResponse(202, "Accepted", transferStatusPage(
+            title: "Preparing your book",
+            message: "Converting “\(bookTitle)” to a Kindle-ready format. This page will refresh and start the download when it’s ready — usually under a minute.",
+            autoRefreshSeconds: 20
+        ), headers: ["Retry-After": "20"])
+    }
 
-        Task { @MainActor in self.activeDownloads -= 1 }
-
-        if let error = conversionError {
-            logger.error("Kindle conversion failed: \(error.localizedDescription)")
-            return .raw(500, "Conversion Failed", [
-                "Content-Type": "text/html; charset=utf-8"
-            ]) { writer in
-                let html = """
-                <!DOCTYPE html>
-                <html><head><title>Conversion Failed</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <style>body{font-family:sans-serif;padding:2rem;text-align:center;background:#1a1a2e;color:#fff;}
-                h1{color:#ff6b6b;}p{color:#ccc;}</style></head>
-                <body><h1>Conversion Failed</h1>
-                <p>Could not convert book to Kindle format.</p>
-                <p style="font-size:0.8rem;">\(self.escapeHTML(error.localizedDescription))</p>
-                </body></html>
-                """
-                try writer.write(Data(html.utf8))
-            }
-        }
-
-        guard let resultURL = conversionResult else {
-            return .internalServerError
-        }
-
-        logger.info("Kindle conversion complete, serving: \(resultURL.lastPathComponent)")
-        return serveFile(at: resultURL, originalTitle: fileURL.deletingPathExtension().lastPathComponent)
+    /// Wrap an HTML string in a Swifter response with the right content type.
+    private func htmlResponse(_ status: Int, _ reason: String, _ html: String, headers: [String: String] = [:]) -> HttpResponse {
+        var allHeaders = headers
+        allHeaders["Content-Type"] = "text/html; charset=utf-8"
+        return .raw(status, reason, allHeaders) { try $0.write(Data(html.utf8)) }
     }
 
     /// Build a chunked HTTP response that streams a file straight from disk.
@@ -553,8 +515,8 @@ public final class HTTPTransferServer: ObservableObject {
             return """
             <div class="book-card">
                 <div class="book-info">
-                    <h2 class="book-title">\(escapeHTML(book.title))</h2>
-                    <p class="book-author">\(escapeHTML(authors.isEmpty ? "Unknown Author" : authors))</p>
+                    <h2 class="book-title">\(book.title.xmlEscaped)</h2>
+                    <p class="book-author">\((authors.isEmpty ? "Unknown Author" : authors).xmlEscaped)</p>
                     <div class="book-meta">
                         <span class="format-badge">\(formatUpper)</span>
                         <span class="file-size">\(sizeFormatted)</span>
@@ -884,15 +846,5 @@ public final class HTTPTransferServer: ObservableObject {
         formatter.countStyle = .file
         formatter.allowedUnits = [.useMB, .useKB]
         return formatter.string(fromByteCount: bytes)
-    }
-
-    /// Escape HTML special characters
-    private func escapeHTML(_ string: String) -> String {
-        string
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
-            .replacingOccurrences(of: "'", with: "&#39;")
     }
 }
