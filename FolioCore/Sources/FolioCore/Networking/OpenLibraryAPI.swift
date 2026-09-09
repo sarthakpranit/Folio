@@ -37,7 +37,7 @@ public final class OpenLibraryAPI: MetadataProvider, @unchecked Sendable {
         config.waitsForConnectivity = true
         // Add User-Agent header as required by Open Library API guidelines
         config.httpAdditionalHeaders = [
-            "User-Agent": "Folio/1.0 (macOS ebook manager; https://github.com/folio-app)"
+            "User-Agent": "Folio/\(FolioCoreVersion) (macOS ebook manager; https://github.com/sarthakpranit/Folio)"
         ]
         self.session = URLSession(configuration: config)
     }
@@ -112,8 +112,11 @@ public final class OpenLibraryAPI: MetadataProvider, @unchecked Sendable {
                 confidence: 0.90, // High confidence for ISBN match
                 source: providerName
             )
-        } catch let error as MetadataError where error == .notFound("Resource not found") {
-            return nil
+        } catch let error as MetadataError {
+            // A "not found" for an ISBN lookup is an expected miss, not a failure.
+            // Match the case, not the message payload.
+            if case .notFound = error { return nil }
+            throw error
         }
     }
 

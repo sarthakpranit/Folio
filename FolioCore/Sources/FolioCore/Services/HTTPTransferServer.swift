@@ -858,7 +858,7 @@ public final class HTTPTransferServer: ObservableObject {
             </main>
 
             <footer class="footer">
-                <p>Powered by <a href="https://github.com/user/folio">Folio</a></p>
+                <p>Powered by <a href="https://github.com/sarthakpranit/Folio">Folio</a></p>
             </footer>
         </body>
         </html>
