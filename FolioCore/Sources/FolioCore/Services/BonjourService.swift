@@ -8,7 +8,7 @@ import Combine
 // MARK: - Discovered Server
 
 /// Represents a discovered Folio server on the network
-public struct DiscoveredServer: Identifiable, Hashable {
+public struct DiscoveredServer: Identifiable, Hashable, Sendable {
     public let id: String
     public let name: String
     public let host: String
