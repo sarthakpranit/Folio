@@ -8,9 +8,29 @@
 import CoreData
 import CloudKit
 import Combine
+import OSLog
+
+/// A Core Data store that would not open. Held and surfaced instead of crashing
+/// or silently continuing against no store (#39). Recovery-first (decision #4):
+/// the store file itself is never touched.
+struct StoreLoadFailure: Identifiable {
+    let id = UUID()
+    let underlyingError: NSError
+    /// Location of the store that failed, for "reveal in Finder".
+    let storeURL: URL?
+
+    var message: String { underlyingError.localizedDescription }
+}
 
 class PersistenceController: ObservableObject {
     @MainActor static let shared = PersistenceController()
+
+    private static let logger = Logger(subsystem: "com.folio", category: "Persistence")
+
+    /// Non-nil when `loadPersistentStores` failed. The app shows a recovery
+    /// screen in place of the library while this is set, so no write can land
+    /// on a half-open stack (#39).
+    @Published var loadFailure: StoreLoadFailure?
 
     /// Preview instance for SwiftUI previews
     @MainActor
@@ -86,16 +106,31 @@ class PersistenceController: ObservableObject {
             // Enable persistent history tracking (required for CloudKit)
             description.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
             description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+
+            // Attempt lightweight migration on a model change instead of dropping
+            // straight into the load-failure path (#39).
+            description.shouldMigrateStoreAutomatically = true
+            description.shouldInferMappingModelAutomatically = true
         }
 
-        container.loadPersistentStores { storeDescription, error in
+        container.loadPersistentStores { [weak self] storeDescription, error in
             if let error = error as NSError? {
-                // Log the error but don't crash in production
-                print("Core Data store failed to load: \(error), \(error.userInfo)")
-
-                #if DEBUG
-                fatalError("Unresolved Core Data error \(error), \(error.userInfo)")
-                #endif
+                // Recovery-first (decision #4): leave the store file untouched,
+                // surface the failure, and let the user decide. Do NOT fall
+                // through — an app running against a store that failed to load
+                // shows an empty library and loses data on the next write (#39).
+                //
+                // This store is loaded synchronously (local SQLite, no
+                // `shouldAddStoreAsynchronously`), so the completion runs on the
+                // calling thread during `init`, before the first `body` pass.
+                // Assigning here means the recovery screen is shown from the
+                // very first render — `ContentView` never mounts against the
+                // half-open stack.
+                Self.logger.fault("Core Data store failed to load: \(error.localizedDescription, privacy: .public) — \(String(describing: error.userInfo), privacy: .public)")
+                self?.loadFailure = StoreLoadFailure(
+                    underlyingError: error,
+                    storeURL: storeDescription.url
+                )
             }
         }
 
