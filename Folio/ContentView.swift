@@ -670,9 +670,10 @@ struct ContentView: View {
                         if let coverURL = metadata.coverImageURL {
                             book.coverImageURL = coverURL
                             Task {
-                                if let (data, _) = try? await URLSession.shared.data(from: coverURL) {
+                                if let (data, _) = try? await URLSession.shared.data(from: coverURL),
+                                   let cover = CoverImageStore.processedForStorage(data) {
                                     await MainActor.run {
-                                        book.coverImageData = data
+                                        book.coverImageData = cover
                                         try? book.managedObjectContext?.save()
                                     }
                                 }

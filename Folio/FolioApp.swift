@@ -177,8 +177,9 @@ struct FolioApp: App {
                     // Fetch cover image if URL is available
                     if let coverURL = metadata.coverImageURL {
                         book.coverImageURL = coverURL
-                        if let (data, _) = try? await URLSession.shared.data(from: coverURL) {
-                            book.coverImageData = data
+                        if let (data, _) = try? await URLSession.shared.data(from: coverURL),
+                           let cover = CoverImageStore.processedForStorage(data) {
+                            book.coverImageData = cover
                         }
                     }
 
