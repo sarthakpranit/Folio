@@ -241,7 +241,7 @@ public final class CalibreConversionService: @unchecked Sendable {
 
         // Build arguments
         var arguments = [inputURL.path, outputURL.path]
-        arguments.append(contentsOf: buildConversionArguments(options: options, outputFormat: normalizedOutputFormat))
+        arguments.append(contentsOf: buildConversionArguments(options: options))
 
         // Run conversion
         logger.info("Starting conversion: \(inputURL.lastPathComponent) -> \(normalizedOutputFormat)")
@@ -430,7 +430,7 @@ public final class CalibreConversionService: @unchecked Sendable {
     }
 
     /// Build command-line arguments for conversion
-    private func buildConversionArguments(options: ConversionOptions, outputFormat: String) -> [String] {
+    private func buildConversionArguments(options: ConversionOptions) -> [String] {
         var args: [String] = []
 
         // Add profile if specified
@@ -438,10 +438,11 @@ public final class CalibreConversionService: @unchecked Sendable {
             args.append(contentsOf: ["--output-profile", profile])
         }
 
-        // Image quality for PDF/MOBI output
-        if outputFormat == "pdf" || outputFormat == "mobi" || outputFormat == "azw3" {
-            args.append(contentsOf: ["--jpeg-quality", String(options.quality)])
-        }
+        // Note: `--jpeg-quality` is NOT a general ebook-convert option — it only
+        // exists in the comic (cbz/cbr) input plugin, which this service does not
+        // accept. Passing it made every mobi/azw3/pdf conversion fail with
+        // "no such option: --jpeg-quality" on Calibre 9.x. `options.quality` is
+        // kept on the type for a future comic path but is not emitted here.
 
         // Preserve metadata is the default behavior for ebook-convert.
 

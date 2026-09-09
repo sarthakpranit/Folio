@@ -19,10 +19,10 @@ public actor SendToKindleService {
         public let username: String
         public let useTLS: Bool
 
-        /// Common SMTP configurations
-        /// Note: We use port 465 (SMTPS/implicit TLS) instead of port 587 (STARTTLS)
-        /// because CFStream's mid-stream TLS upgrade for STARTTLS is unreliable on modern macOS.
-        /// Port 465 establishes TLS from the start, which works much more reliably.
+        /// Common SMTP configurations.
+        /// Gmail offers implicit TLS on 465, which the client prefers. iCloud and
+        /// Outlook only accept submission on 587 (STARTTLS) — 465 is not listening
+        /// on those hosts — and the client's STARTTLS path handles them.
         public static let gmail = SMTPConfiguration(
             host: "smtp.gmail.com",
             port: 465,
@@ -32,14 +32,14 @@ public actor SendToKindleService {
 
         public static let outlook = SMTPConfiguration(
             host: "smtp-mail.outlook.com",
-            port: 465,
+            port: 587,
             username: "",
             useTLS: true
         )
 
         public static let icloud = SMTPConfiguration(
             host: "smtp.mail.me.com",
-            port: 465,
+            port: 587,
             username: "",
             useTLS: true
         )
@@ -360,10 +360,21 @@ private actor NativeSMTPClient {
         let base64Attachment = attachmentData.base64EncodedString(options: .lineLength76Characters)
         let mimeType = getMIMEType(for: filename)
 
+        // RFC 5322 requires Date and From; a missing Date and Message-ID also
+        // reads as a spam signal to receiving filters. Generate both.
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        let dateHeader = dateFormatter.string(from: Date())
+        let senderDomain = sender.split(separator: "@").last.map(String.init) ?? "folio.local"
+        let messageID = "<\(UUID().uuidString)@\(senderDomain)>"
+
         return """
         From: \(sender)\r
         To: \(recipient)\r
         Subject: \(subject)\r
+        Date: \(dateHeader)\r
+        Message-ID: \(messageID)\r
         MIME-Version: 1.0\r
         Content-Type: multipart/mixed; boundary="\(boundary)"\r
         \r

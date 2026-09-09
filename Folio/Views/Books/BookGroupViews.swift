@@ -423,7 +423,11 @@ struct BookGroupContextMenuContent: View {
 
         Divider()
 
-        Menu("Send to Kindle...") {
+        Button("Transfer over WiFi…") {
+            NotificationCenter.default.post(name: .folioOpenWiFiTransfer, object: nil)
+        }
+
+        Menu("Email to Kindle…") {
             if kindleDevices.isEmpty {
                 Text("No Kindle devices configured")
                     .foregroundColor(.secondary)
@@ -664,8 +668,12 @@ struct BookGroupContextMenu: View {
 
         Divider()
 
-        // Send to Kindle - uses the best compatible existing format (EPUB > AZW3 > PDF > TXT)
-        Menu("Send to Kindle...") {
+        Button("Transfer over WiFi…") {
+            NotificationCenter.default.post(name: .folioOpenWiFiTransfer, object: nil)
+        }
+
+        // Email to Kindle - uses the best compatible existing format (EPUB > AZW3 > PDF > TXT)
+        Menu("Email to Kindle…") {
             if kindleDevices.isEmpty {
                 Text("No Kindle devices configured")
                     .foregroundColor(.secondary)

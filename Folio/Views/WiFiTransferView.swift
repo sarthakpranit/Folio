@@ -9,8 +9,8 @@ import SwiftUI
 import FolioCore
 
 struct WiFiTransferView: View {
-    @StateObject private var transferServer: HTTPTransferServer
-    @StateObject private var bonjourService = BonjourService()
+    @ObservedObject var transferServer: HTTPTransferServer
+    @ObservedObject var bonjourService: BonjourService
     @State private var qrCodeImage: NSImage?
     @State private var showingError = false
     @State private var errorMessage = ""
@@ -20,9 +20,10 @@ struct WiFiTransferView: View {
 
     let libraryService: LibraryService
 
-    init(libraryService: LibraryService) {
+    init(libraryService: LibraryService, transferServer: HTTPTransferServer, bonjourService: BonjourService) {
         self.libraryService = libraryService
-        _transferServer = StateObject(wrappedValue: HTTPTransferServer())
+        _transferServer = ObservedObject(wrappedValue: transferServer)
+        _bonjourService = ObservedObject(wrappedValue: bonjourService)
     }
 
     var body: some View {
@@ -59,6 +60,14 @@ struct WiFiTransferView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage)
+        }
+        .onAppear {
+            // Server can outlive this popover, so rebuild the QR code if we
+            // reopened while it is already running.
+            if transferServer.isRunning, qrCodeImage == nil,
+               let url = transferServer.serverURL {
+                qrCodeImage = QRCodeGenerator.shared.generate(from: url, size: 200)
+            }
         }
     }
 
@@ -408,14 +417,22 @@ struct WiFiTransferView: View {
 struct WiFiTransferButton: View {
     @State private var isShowingPopover = false
     let libraryService: LibraryService
+    // Owned by ContentView (window lifetime) and shared with the Kindle menu,
+    // so the server survives the popover closing and there is only ever one.
+    @ObservedObject var transferServer: HTTPTransferServer
+    @ObservedObject var bonjourService: BonjourService
 
     var body: some View {
         Button(action: { isShowingPopover.toggle() }) {
-            Label("WiFi Transfer", systemImage: "wifi")
+            Label("WiFi Transfer", systemImage: transferServer.isRunning ? "wifi.circle.fill" : "wifi")
         }
         .help("Transfer books to e-readers via WiFi")
         .popover(isPresented: $isShowingPopover, arrowEdge: .bottom) {
-            WiFiTransferView(libraryService: libraryService)
+            WiFiTransferView(
+                libraryService: libraryService,
+                transferServer: transferServer,
+                bonjourService: bonjourService
+            )
         }
     }
 }
@@ -423,6 +440,10 @@ struct WiFiTransferButton: View {
 // MARK: - Preview
 
 #Preview {
-    WiFiTransferView(libraryService: LibraryService.shared)
-        .frame(width: 400, height: 650)
+    WiFiTransferView(
+        libraryService: LibraryService.shared,
+        transferServer: HTTPTransferServer(),
+        bonjourService: BonjourService()
+    )
+    .frame(width: 400, height: 650)
 }

@@ -230,11 +230,6 @@ public final class HTTPTransferServer: ObservableObject {
         let mimeType = format?.mimeType ?? "application/octet-stream"
         let filename = fileURL.lastPathComponent
 
-        // Increment active downloads
-        Task { @MainActor in
-            self.activeDownloads += 1
-        }
-
         logger.info("Starting download: \(filename)")
 
         // Try to resolve security-scoped access for external volumes
@@ -268,50 +263,37 @@ public final class HTTPTransferServer: ObservableObject {
             }
         }
 
-        // Verify file exists with our access
-        guard FileManager.default.fileExists(atPath: accessibleURL.path) else {
-            if didStartAccessing {
-                accessibleURL.stopAccessingSecurityScopedResource()
-            }
-            logger.error("Book file does not exist: \(accessibleURL.path)")
-            Task { @MainActor in self.activeDownloads -= 1 }
+        let finalURL = accessibleURL
+        let stopAccess = didStartAccessing
+
+        // Open the file and read its size for Content-Length before we commit
+        // to a 200 response.
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: finalURL.path),
+              let fileSize = (attrs[.size] as? NSNumber)?.int64Value,
+              let handle = try? FileHandle(forReadingFrom: finalURL) else {
+            if stopAccess { finalURL.stopAccessingSecurityScopedResource() }
+            logger.error("Book file not readable: \(finalURL.path)")
             return .notFound
         }
 
-        do {
-            let fileData = try Data(contentsOf: accessibleURL)
+        // Count the download only while it is actually streaming, and clear the
+        // count (and security scope) when the body finishes — not before.
+        Task { @MainActor in self.activeDownloads += 1 }
+        logger.info("Streaming download: \(filename) (\(fileSize) bytes)")
 
-            // Stop security-scoped access
-            if didStartAccessing {
-                accessibleURL.stopAccessingSecurityScopedResource()
-            }
-
-            // Decrement active downloads when done
-            Task { @MainActor in
-                self.activeDownloads -= 1
-            }
-
-            logger.info("Download completed: \(filename)")
-
-            // Return file with proper headers
-            return .raw(200, "OK", [
+        return streamingFileResponse(
+            handle: handle,
+            size: fileSize,
+            headers: [
                 "Content-Type": mimeType,
-                "Content-Disposition": "attachment; filename=\"\(filename)\"",
-                "Content-Length": "\(fileData.count)"
-            ]) { writer in
-                try writer.write(fileData)
+                "Content-Disposition": "attachment; filename=\"\(filename)\""
+            ],
+            onFinish: { [weak self] in
+                if stopAccess { finalURL.stopAccessingSecurityScopedResource() }
+                Task { @MainActor in self?.activeDownloads -= 1 }
+                logger.info("Download completed: \(filename)")
             }
-        } catch {
-            // Stop security-scoped access on error
-            if didStartAccessing {
-                accessibleURL.stopAccessingSecurityScopedResource()
-            }
-            Task { @MainActor in
-                self.activeDownloads -= 1
-            }
-            logger.error("Failed to read book file: \(error)")
-            return .internalServerError
-        }
+        )
     }
 
     /// Handle cover image request
@@ -520,23 +502,56 @@ public final class HTTPTransferServer: ObservableObject {
         return serveFile(at: resultURL, originalTitle: fileURL.deletingPathExtension().lastPathComponent)
     }
 
-    /// Helper to serve a file with proper headers
-    private func serveFile(at url: URL, originalTitle: String) -> HttpResponse {
-        do {
-            let fileData = try Data(contentsOf: url)
-            let filename = "\(originalTitle).mobi"
+    /// Build a chunked HTTP response that streams a file straight from disk.
+    ///
+    /// The previous implementation did `Data(contentsOf:)`, so a 300 MB PDF sat
+    /// fully in memory for every concurrent download. Streaming in fixed chunks
+    /// keeps memory flat regardless of file or library size.
+    /// - Parameter onFinish: run once the body has been fully written (or the
+    ///   client disconnected) — used to release security-scoped access and
+    ///   decrement the active-download count at the right time.
+    private func streamingFileResponse(
+        handle: FileHandle,
+        size: Int64,
+        headers: [String: String],
+        onFinish: @escaping () -> Void = {}
+    ) -> HttpResponse {
+        var allHeaders = headers
+        allHeaders["Content-Length"] = "\(size)"
 
-            return .raw(200, "OK", [
-                "Content-Type": "application/x-mobipocket-ebook",
-                "Content-Disposition": "attachment; filename=\"\(filename)\"",
-                "Content-Length": "\(fileData.count)"
-            ]) { writer in
-                try writer.write(fileData)
+        return .raw(200, "OK", allHeaders) { writer in
+            defer {
+                try? handle.close()
+                onFinish()
             }
-        } catch {
-            logger.error("Failed to read converted file: \(error)")
+            let chunkSize = 256 * 1024
+            while true {
+                let chunk = try autoreleasepool { try handle.read(upToCount: chunkSize) }
+                guard let chunk, !chunk.isEmpty else { break }
+                try writer.write(chunk)
+            }
+        }
+    }
+
+    /// Helper to serve a converted (MOBI) file with proper headers
+    private func serveFile(at url: URL, originalTitle: String) -> HttpResponse {
+        let filename = "\(originalTitle).mobi"
+
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let fileSize = (attrs[.size] as? NSNumber)?.int64Value,
+              let handle = try? FileHandle(forReadingFrom: url) else {
+            logger.error("Failed to open converted file: \(url.path)")
             return .internalServerError
         }
+
+        return streamingFileResponse(
+            handle: handle,
+            size: fileSize,
+            headers: [
+                "Content-Type": "application/x-mobipocket-ebook",
+                "Content-Disposition": "attachment; filename=\"\(filename)\""
+            ]
+        )
     }
 
     /// Generate mobile-friendly HTML page
@@ -549,24 +564,34 @@ public final class HTTPTransferServer: ObservableObject {
             let formatUpper = book.format.uppercased()
             let format = EbookFormat(fileExtension: book.format)
             let isKindleNative = format?.kindleNativeFormat ?? false
+            let isConvertible = format?.supportsConversion ?? false
 
-            // Show Kindle download button for non-native formats when Calibre is available
+            // A Kindle's browser can only open a Kindle-native file. For anything
+            // else we need Calibre to convert first; without it the raw download
+            // below is a dead file on a Kindle, so say so rather than fail quietly.
             let kindleButton: String
+            let downloadLabel: String
             if isKindleNative {
-                // Already Kindle-compatible - regular download works
                 kindleButton = ""
-            } else if calibreAvailable {
-                // Offer conversion to MOBI
+                downloadLabel = "Download"
+            } else if calibreAvailable && isConvertible {
                 kindleButton = """
                     <a href="/api/books/\(book.id)/kindle" class="kindle-btn" download>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
                         </svg>
-                        Kindle
+                        Send to Kindle
                     </a>
                 """
+                downloadLabel = "Original \(formatUpper)"
+            } else if isConvertible {
+                kindleButton = """
+                    <span class="kindle-hint">Install Calibre on the Mac<br>for Kindle-ready downloads</span>
+                """
+                downloadLabel = "Download"
             } else {
                 kindleButton = ""
+                downloadLabel = "Download"
             }
 
             return """
@@ -587,7 +612,7 @@ public final class HTTPTransferServer: ObservableObject {
                             <polyline points="7 10 12 15 17 10"/>
                             <line x1="12" y1="15" x2="12" y2="3"/>
                         </svg>
-                        Download
+                        \(downloadLabel)
                     </a>
                 </div>
             </div>
@@ -770,6 +795,14 @@ public final class HTTPTransferServer: ObservableObject {
                     opacity: 0.8;
                 }
 
+                .kindle-hint {
+                    font-size: 0.7rem;
+                    color: rgba(255, 255, 255, 0.45);
+                    text-align: center;
+                    line-height: 1.3;
+                    max-width: 140px;
+                }
+
                 .empty-state {
                     text-align: center;
                     padding: 4rem 2rem;
@@ -832,50 +865,61 @@ public final class HTTPTransferServer: ObservableObject {
         """
     }
 
-    /// Get local IP address for display
+    /// Get the local IPv4 address an e-reader on the same WiFi can reach.
+    ///
+    /// Only checking `en0`/`en1` was too narrow: a Mac on WiFi through a USB
+    /// dongle uses `en5+`, and a running VPN adds `utun*` addresses that an
+    /// e-reader cannot route to. This collects every usable candidate, drops
+    /// the ones that are never LAN-reachable, and prefers Wi-Fi.
     private func getLocalIPAddress() -> String? {
-        var address: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
-
         guard getifaddrs(&ifaddr) == 0 else { return nil }
         defer { freeifaddrs(ifaddr) }
+
+        var candidates: [(interface: String, ip: String)] = []
 
         var ptr = ifaddr
         while ptr != nil {
             defer { ptr = ptr?.pointee.ifa_next }
-
             guard let interface = ptr?.pointee else { continue }
+            guard interface.ifa_addr.pointee.sa_family == UInt8(AF_INET) else { continue }
 
-            let addrFamily = interface.ifa_addr.pointee.sa_family
+            let name = String(cString: interface.ifa_name)
 
-            // Check for IPv4
-            if addrFamily == UInt8(AF_INET) {
-                let name = String(cString: interface.ifa_name)
-
-                // Skip loopback interface
-                if name == "lo0" { continue }
-
-                // Prefer en0 (WiFi on Mac) or en1
-                if name == "en0" || name == "en1" {
-                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    getnameinfo(
-                        interface.ifa_addr,
-                        socklen_t(interface.ifa_addr.pointee.sa_len),
-                        &hostname,
-                        socklen_t(hostname.count),
-                        nil,
-                        0,
-                        NI_NUMERICHOST
-                    )
-                    address = String(cString: hostname)
-
-                    // If we found en0, prefer it
-                    if name == "en0" { break }
-                }
+            // Loopback, VPN tunnels, Apple Wireless Direct Link, and internal
+            // bridges are not reachable from a device on the WiFi LAN.
+            if name == "lo0" { continue }
+            if name.hasPrefix("utun") || name.hasPrefix("ipsec") || name.hasPrefix("ppp")
+                || name.hasPrefix("bridge") || name.hasPrefix("awdl") || name.hasPrefix("llw") {
+                continue
             }
+
+            // Interface must be up and running.
+            let flags = Int32(interface.ifa_flags)
+            guard flags & IFF_UP == IFF_UP, flags & IFF_RUNNING == IFF_RUNNING else { continue }
+
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(
+                interface.ifa_addr,
+                socklen_t(interface.ifa_addr.pointee.sa_len),
+                &hostname,
+                socklen_t(hostname.count),
+                nil, 0, NI_NUMERICHOST
+            )
+            let ip = String(cString: hostname)
+
+            // Self-assigned address (no DHCP lease) — nothing else can reach it.
+            if ip.hasPrefix("169.254.") { continue }
+
+            candidates.append((name, ip))
         }
 
-        return address
+        func rank(_ name: String) -> Int {
+            if name == "en0" { return 0 }   // Wi-Fi on Apple silicon / most Macs
+            if name.hasPrefix("en") { return 1 } // other Ethernet-style interfaces
+            return 2
+        }
+        return candidates.sorted { rank($0.interface) < rank($1.interface) }.first?.ip
     }
 
     /// Format file size for display

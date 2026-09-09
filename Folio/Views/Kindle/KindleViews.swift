@@ -154,6 +154,9 @@ struct KindleSettingsView: View {
     @State private var smtpSaveError: String?
     @State private var smtpSaveSuccess = false
     @State private var isConfigured = false
+    /// True only while loadExistingSMTPConfiguration() is applying a saved config,
+    /// so the provider-change handler doesn't wipe the values it just restored.
+    @State private var isRestoringConfig = false
 
     enum SMTPProvider: String, CaseIterable {
         case gmail = "Gmail"
@@ -164,7 +167,9 @@ struct KindleSettingsView: View {
         var host: String {
             switch self {
             case .gmail: return "smtp.gmail.com"
-            case .outlook: return "smtp.office365.com"
+            // Consumer Outlook/Hotmail uses smtp-mail.outlook.com; smtp.office365.com
+            // is for Microsoft 365 business tenants only.
+            case .outlook: return "smtp-mail.outlook.com"
             case .icloud: return "smtp.mail.me.com"
             case .custom: return ""
             }
@@ -172,7 +177,11 @@ struct KindleSettingsView: View {
 
         var port: Int {
             switch self {
-            case .gmail, .outlook, .icloud: return 587
+            // Gmail offers implicit TLS on 465 (SendToKindleService's preferred
+            // path). iCloud and Office 365 only accept submission on 587 — 465 is
+            // not listening on smtp.mail.me.com, so it must use STARTTLS.
+            case .gmail: return 465
+            case .icloud, .outlook: return 587
             case .custom: return 587
             }
         }
@@ -231,10 +240,20 @@ struct KindleSettingsView: View {
                         }
                         .pickerStyle(.segmented)
                         .onChange(of: selectedProvider) { newValue in
+                            if isRestoringConfig {
+                                isRestoringConfig = false
+                                return
+                            }
                             if newValue != .custom {
                                 smtpHost = newValue.host
                                 smtpPort = String(newValue.port)
                             }
+                            // Credentials are provider-specific — a Gmail address
+                            // and app password won't work for iCloud. Force
+                            // re-entry so a stale value can't cause a 550.
+                            smtpUsername = ""
+                            smtpPassword = ""
+                            isConfigured = false
                         }
 
                         // SMTP fields
@@ -262,6 +281,22 @@ struct KindleSettingsView: View {
                                 }
                                 .font(.caption)
                             }
+                            Text("Gmail often blocks e-book attachments to @kindle.com. If sends fail with a 552 error, use iCloud instead.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if selectedProvider == .icloud {
+                            Link(destination: URL(string: "https://account.apple.com/account/manage")!) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.up.right.square")
+                                    Text("Create an iCloud App-Specific Password")
+                                }
+                                .font(.caption)
+                            }
+                            Text("Sign in, then Sign-In & Security → App-Specific Passwords. Use your full @icloud.com address as the email.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
 
                         Toggle("Use TLS (recommended)", isOn: $useTLS)
@@ -277,6 +312,15 @@ struct KindleSettingsView: View {
                             Text("Email settings saved successfully!")
                                 .font(.caption)
                                 .foregroundColor(.green)
+                        }
+
+                        // The password is never loaded back from the Keychain, so
+                        // changing provider requires re-entering it — otherwise Save
+                        // stays disabled and the old config (e.g. Gmail) keeps sending.
+                        if smtpPassword.isEmpty {
+                            Text("Enter your password (or app-specific password) to save changes.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
 
                         HStack {
@@ -367,10 +411,9 @@ struct KindleSettingsView: View {
 
             if let config = await sendService.getSMTPConfiguration() {
                 await MainActor.run {
-                    smtpHost = config.host
-                    smtpPort = String(config.port)
-                    smtpUsername = config.username
-                    useTLS = config.useTLS
+                    // Guard the provider-change handler so it doesn't clear the
+                    // credentials we're about to restore.
+                    isRestoringConfig = true
 
                     // Determine which provider matches
                     if config.host == SMTPProvider.gmail.host {
@@ -382,6 +425,15 @@ struct KindleSettingsView: View {
                     } else {
                         selectedProvider = .custom
                     }
+
+                    smtpHost = config.host
+                    smtpPort = String(config.port)
+                    smtpUsername = config.username
+                    useTLS = config.useTLS
+
+                    // If the provider didn't actually change (e.g. still .gmail),
+                    // the handler won't fire to clear the flag — do it here.
+                    DispatchQueue.main.async { isRestoringConfig = false }
                 }
             }
         }
@@ -393,7 +445,9 @@ struct KindleSettingsView: View {
         isSavingSMTP = true
 
         let host = selectedProvider == .custom ? smtpHost : selectedProvider.host
-        let port = Int(smtpPort) ?? 587
+        // For known providers the port comes from the provider itself, not the
+        // text field, which may not have been resynced if the picker never changed.
+        let port = selectedProvider == .custom ? (Int(smtpPort) ?? 587) : selectedProvider.port
 
         Task {
             do {
@@ -535,7 +589,7 @@ struct SendToKindleView: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("Send to Kindle")
+                Text("Email to Kindle")
                     .font(.headline)
                 Spacer()
                 Button(action: { dismiss() }) {

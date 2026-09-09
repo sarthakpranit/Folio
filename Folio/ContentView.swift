@@ -17,6 +17,11 @@ import CoreData
 import FolioCore
 import Combine
 
+extension Notification.Name {
+    /// Posted by per-book context menus to open the library-wide WiFi transfer panel.
+    static let folioOpenWiFiTransfer = Notification.Name("folioOpenWiFiTransfer")
+}
+
 // MARK: - Main Content View
 
 struct ContentView: View {
@@ -63,6 +68,12 @@ struct ContentView: View {
     @State private var showingSendToKindleSheet = false
     @State private var showingKindleSettings = false
     @State private var showingAddKindleDevice = false
+    @State private var showingWiFiTransfer = false
+
+    // WiFi transfer server — owned here (window lifetime) so the toolbar popover
+    // and the Kindle menu share one running instance.
+    @StateObject private var transferServer = HTTPTransferServer()
+    @StateObject private var bonjourService = BonjourService()
 
     // Batch operations
     @State private var showingBatchDeleteConfirmation = false
@@ -180,7 +191,11 @@ struct ContentView: View {
     var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             FileImportButton(libraryService: libraryService)
-            WiFiTransferButton(libraryService: libraryService)
+            WiFiTransferButton(
+                libraryService: libraryService,
+                transferServer: transferServer,
+                bonjourService: bonjourService
+            )
         }
 
         ToolbarItem(placement: .automatic) {
@@ -354,6 +369,22 @@ struct ContentView: View {
 
     private var kindleMenu: some View {
         Menu {
+            Button {
+                showingWiFiTransfer = true
+            } label: {
+                Label("Transfer over WiFi…", systemImage: "wifi")
+            }
+
+            if selectedBook != nil {
+                Button {
+                    showingSendToKindleSheet = true
+                } label: {
+                    Label("Email to Kindle…", systemImage: "envelope")
+                }
+            }
+
+            Divider()
+
             if kindleDevices.isEmpty {
                 Button {
                     showingAddKindleDevice = true
@@ -443,6 +474,16 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingKindleSettings) {
             KindleSettingsView(viewContext: viewContext, kindleDevices: Array(kindleDevices))
+        }
+        .sheet(isPresented: $showingWiFiTransfer) {
+            WiFiTransferView(
+                libraryService: libraryService,
+                transferServer: transferServer,
+                bonjourService: bonjourService
+            )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .folioOpenWiFiTransfer)) { _ in
+            showingWiFiTransfer = true
         }
         .sheet(isPresented: $showingSendToKindleSheet) {
             if let book = selectedBook {
