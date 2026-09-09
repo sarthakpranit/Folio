@@ -2,11 +2,10 @@
 //  Persistence.swift
 //  Folio
 //
-//  Core Data stack with CloudKit sync support
+//  Core Data stack.
 //
 
 import CoreData
-import CloudKit
 import Combine
 import OSLog
 
@@ -80,15 +79,10 @@ class PersistenceController: ObservableObject {
         PersistenceController(inMemory: true)
     }
 
-    let container: NSPersistentCloudKitContainer
-
-    /// Sync status
-    @Published var isSyncing: Bool = false
-    @Published var lastSyncDate: Date?
-    @Published var syncError: Error?
+    let container: NSPersistentContainer
 
     init(inMemory: Bool = false) {
-        container = NSPersistentCloudKitContainer(name: "Folio")
+        container = NSPersistentContainer(name: "Folio")
 
         guard let description = container.persistentStoreDescriptions.first else {
             fatalError("No persistent store descriptions found")
@@ -97,16 +91,6 @@ class PersistenceController: ObservableObject {
         if inMemory {
             description.url = URL(fileURLWithPath: "/dev/null")
         } else {
-            // Configure CloudKit sync (disabled for now until entitlements are set up)
-            // Uncomment when CloudKit container is configured:
-            // description.cloudKitContainerOptions = NSPersistentCloudKitContainerOptions(
-            //     containerIdentifier: "iCloud.com.folio.ebooks"
-            // )
-
-            // Enable persistent history tracking (required for CloudKit)
-            description.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
-            description.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
-
             // Attempt lightweight migration on a model change instead of dropping
             // straight into the load-failure path (#39).
             description.shouldMigrateStoreAutomatically = true
@@ -137,21 +121,6 @@ class PersistenceController: ObservableObject {
         // Configure view context
         container.viewContext.automaticallyMergesChangesFromParent = true
         container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
-
-        // Observe remote changes
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(processRemoteStoreChange),
-            name: .NSPersistentStoreRemoteChange,
-            object: container.persistentStoreCoordinator
-        )
-    }
-
-    @objc private func processRemoteStoreChange(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in
-            self?.isSyncing = false
-            self?.lastSyncDate = Date()
-        }
     }
 
     /// Save the view context if there are changes
