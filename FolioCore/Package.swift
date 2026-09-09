@@ -20,6 +20,12 @@ let package = Package(
             dependencies: [
                 .product(name: "Swifter", package: "swifter"),
                 .product(name: "SwiftyJSON", package: "SwiftyJSON")
+            ],
+            swiftSettings: [
+                // M1 (ADR-0004): complete concurrency checking as WARNINGS while
+                // still in Swift 5 language mode. The M1 tickets burn these down;
+                // the language-mode flip to Swift 6 is gated on zero warnings.
+                .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
         .testTarget(
