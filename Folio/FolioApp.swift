@@ -12,7 +12,9 @@ import FolioCore
 
 @main
 struct FolioApp: App {
-    let persistenceController = PersistenceController.shared
+    // Observed so the window can switch to the recovery screen if the Core Data
+    // store fails to load (#39).
+    @StateObject private var persistenceController = PersistenceController.shared
     @StateObject private var libraryService = LibraryService.shared
 
     /// Grid item size for zoom (shared via AppStorage)
@@ -25,8 +27,12 @@ struct FolioApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environment(\.managedObjectContext, persistenceController.container.viewContext)
+            if let failure = persistenceController.loadFailure {
+                LibraryLoadErrorView(failure: failure)
+            } else {
+                ContentView()
+                    .environment(\.managedObjectContext, persistenceController.container.viewContext)
+            }
         }
         // Settings window (Cmd+,)
         Settings {
