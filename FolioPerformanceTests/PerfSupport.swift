@@ -230,6 +230,8 @@ enum PerfFixture {
             book.dateModified = book.dateAdded
             let slug = title.lowercased().replacingOccurrences(of: " ", with: "-")
             book.fileURL = URL(fileURLWithPath: "/tmp/folio-fixture/\(slug)-\(i).\(fmt)")
+            // Mirror BookRepository.add: the v2 indexed dedup key (#42).
+            book.fileName = book.fileURL?.lastPathComponent.lowercased()
 
             if chance(sharedISBNRatio) {
                 book.isbn13 = sharedISBNPool[Int(rng.next() % UInt64(sharedISBNPool.count))]

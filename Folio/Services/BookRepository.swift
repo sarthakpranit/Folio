@@ -25,11 +25,14 @@
 
 import Foundation
 import CoreData
+import OSLog
 import FolioCore
 
 /// Repository for book persistence operations
 @MainActor
 class BookRepository {
+    private static let logger = Logger(subsystem: "com.folio", category: "BookRepository")
+
     private let viewContext: NSManagedObjectContext
 
     /// Supported ebook file extensions — the single source is FolioCore's
@@ -39,6 +42,42 @@ class BookRepository {
 
     init(context: NSManagedObjectContext) {
         self.viewContext = context
+    }
+
+    // MARK: - Migration Backfill
+
+    private static let didBackfillFileNameKey = "FolioDidBackfillBookFileName"
+
+    /// One-time backfill of `Book.fileName` (the indexed dedup key added in the
+    /// v2 model, #42) for rows that were imported under v1, where lightweight
+    /// migration left the new attribute nil.
+    ///
+    /// Cheap and self-limiting: a single `fileName == nil` fetch that returns
+    /// nothing once it has run. Guarded by a `UserDefaults` flag so a healthy
+    /// run happens at most once; a failure leaves the flag unset so it retries.
+    func backfillFileNamesIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.didBackfillFileNameKey) else { return }
+
+        let request = Book.fetchRequest()
+        request.predicate = NSPredicate(format: "fileName == nil")
+
+        do {
+            let stale = try viewContext.fetch(request)
+            var updated = 0
+            for book in stale {
+                guard let name = book.fileURL?.lastPathComponent, !name.isEmpty else { continue }
+                book.fileName = name.lowercased()
+                updated += 1
+            }
+            if viewContext.hasChanges {
+                try viewContext.save()
+            }
+            defaults.set(true, forKey: Self.didBackfillFileNameKey)
+            Self.logger.info("fileName backfill complete: \(updated, privacy: .public) row(s) updated")
+        } catch {
+            Self.logger.error("fileName backfill failed, will retry next launch: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Fetch Operations
@@ -84,14 +123,17 @@ class BookRepository {
         guard !filename.isEmpty else { return nil }
 
         // Check 1: Same filename already in library.
-        // fileURL is a URI attribute, so string predicates such as CONTAINS are
-        // invalid. Compare the path component after fetching the URI values.
+        // `fileName` (v2 model, #42) is a denormalised, lowercased copy of
+        // `fileURL.lastPathComponent`, fetch-indexed. Query it directly instead
+        // of materialising every Book row and scanning in Swift — import calls
+        // this once per file, so the old full-table scan was O(N x M).
+        // (`fileURL` stays a URI attribute here; migrating it off URI is a
+        // separate follow-up, out of scope for #42.)
         let filenameRequest = Book.fetchRequest()
-        filenameRequest.fetchBatchSize = 100
+        filenameRequest.predicate = NSPredicate(format: "fileName ==[c] %@", filename)
+        filenameRequest.fetchLimit = 1
 
-        if let match = try? viewContext.fetch(filenameRequest).first(where: {
-            $0.fileURL?.lastPathComponent.caseInsensitiveCompare(filename) == .orderedSame
-        }) {
+        if let match = try? viewContext.fetch(filenameRequest).first {
             return match
         }
 
@@ -146,6 +188,9 @@ class BookRepository {
         let book = Book(context: viewContext)
         book.id = UUID()
         book.fileURL = fileURL
+        // Indexed dedup key (#42): lowercased last path component, queried by
+        // `findDuplicate` via an `==[c]` predicate.
+        book.fileName = fileURL.lastPathComponent.lowercased()
         book.format = fileURL.pathExtension.lowercased()
         book.fileSize = getFileSize(fileURL)
         book.dateAdded = Date()

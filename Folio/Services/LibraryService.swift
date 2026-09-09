@@ -96,6 +96,10 @@ class LibraryService: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // One-time backfill of the v2 `Book.fileName` dedup key (#42) for rows
+        // migrated from v1.
+        repository.backfillFileNamesIfNeeded()
+
         loadAll()
     }
 

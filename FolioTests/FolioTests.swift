@@ -200,21 +200,25 @@ struct DuplicateDetectionTests {
         #expect(result == nil)
     }
 
-    @Test("Find duplicate matches URI fileURL by filename without a predicate exception")
+    @Test("Find duplicate matches on the indexed fileName key, case-insensitively")
     @MainActor
     func testFindDuplicateByFilename() async throws {
         let (repository, context) = makeRepository()
 
-        // The duplicate contract is filename-based, not full-URL-based.
+        // The duplicate contract is filename-based, not full-URL-based. Since
+        // #42 the match runs against `Book.fileName` — a lowercased, indexed
+        // copy of `fileURL.lastPathComponent` that `add()` sets — via an
+        // `==[c]` predicate, not a full-table scan over the URI-valued fileURL.
         let book = Book(context: context)
         book.id = UUID()
         book.title = "Existing Book"
         book.sortTitle = "existing book"
         book.fileURL = URL(fileURLWithPath: "/Volumes/Library/Existing/MyBook.epub")
+        book.fileName = "mybook.epub"
         book.dateAdded = Date()
         try context.save()
 
-        // This used to evaluate CONTAINS against the URI-valued fileURL and crash.
+        // Caller passes the raw last path component; case must not matter.
         let result = repository.findDuplicate(
             filename: "MyBook.epub",
             title: "Different Title",
@@ -223,6 +227,37 @@ struct DuplicateDetectionTests {
 
         #expect(result != nil)
         #expect(result?.title == "Existing Book")
+    }
+
+    @Test("add() records the dedup key so re-importing the same file is caught")
+    @MainActor
+    func testAddPopulatesFileNameForDuplicateDetection() async throws {
+        let (repository, _) = makeRepository()
+
+        // Why this matters: import calls findDuplicate once per file to skip
+        // files already in the library. That only works if add() denormalises
+        // the filename into the indexed `fileName` key (#42) at insert time.
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Folio-\(UUID().uuidString)-Test Book.epub")
+        try Data("epub".utf8).write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let added = try repository.add(
+            from: tempURL,
+            title: "Test Book",
+            sortTitle: "test book",
+            authorName: nil
+        )
+        #expect(added.fileName == tempURL.lastPathComponent.lowercased())
+
+        // A second import of the same file, discovered under a different parsed
+        // title, is still recognised as a duplicate via the filename branch.
+        let dup = repository.findDuplicate(
+            filename: tempURL.lastPathComponent,
+            title: "Completely Different Title",
+            author: nil
+        )
+        #expect(dup?.objectID == added.objectID)
     }
 
     @Test("Find duplicate matches by title and author")
@@ -380,5 +415,122 @@ struct DeleteAllDataTests {
         try controller.deleteAllData()
 
         #expect(book.isDeleted || book.managedObjectContext == nil)
+    }
+}
+
+// MARK: - Core Data Model Migration Tests
+
+/// Guards the v1 -> v2 schema change (#42/#44/#45). The whole point of shipping a
+/// second `.xcdatamodel` version rather than editing the first in place is that
+/// existing user stores must open via lightweight/inferred migration — no
+/// mapping model, no data loss. If a future edit makes the delta non-lightweight
+/// (e.g. a new non-optional attribute with no default), this suite fails loudly
+/// instead of the app dropping into the store-load-failure screen for real users.
+@Suite("Core Data Model Migration")
+struct CoreDataMigrationTests {
+
+    private func momdURL() throws -> URL {
+        let bundle = Bundle(for: PersistenceController.self)
+        let url = try #require(bundle.url(forResource: "Folio", withExtension: "momd"),
+                               "Folio.momd must be bundled with the app")
+        return url
+    }
+
+    private func model(_ name: String) throws -> NSManagedObjectModel {
+        let momd = try momdURL()
+        let url = momd.appendingPathComponent("\(name).mom")
+        return try #require(NSManagedObjectModel(contentsOf: url), "missing compiled model \(name).mom")
+    }
+
+    @Test("v2 model declares the constraints and indexes the tickets asked for")
+    func testV2ModelShape() throws {
+        let v2 = try model("Folio 2")
+        let entities = v2.entitiesByName
+
+        // #44 — uniqueness constraints.
+        func constraintValues(_ entity: String) -> Set<String> {
+            let constraints = entities[entity]?.uniquenessConstraints ?? []
+            return Set(constraints.flatMap { group in
+                group.map { element -> String in
+                    (element as? NSPropertyDescription)?.name ?? String(describing: element)
+                }
+            })
+        }
+        #expect(constraintValues("Book").contains("id"))
+        #expect(constraintValues("Author").contains("name"))
+        #expect(constraintValues("Series").contains("name"))
+        #expect(constraintValues("Tag").contains("name"))
+
+        // #45 — fetch indexes.
+        func indexNames(_ entity: String) -> Set<String> {
+            Set((entities[entity]?.indexes ?? []).map { $0.name })
+        }
+        #expect(indexNames("Book").isSuperset(of: ["bySortTitle", "byISBN", "byISBN13", "byFileName"]))
+        #expect(indexNames("Tag").contains("byName"))
+        #expect(indexNames("Collection").contains("byName"))
+
+        // #42 — the dedup key exists and #44 kept Book.id optional on purpose
+        // (UUID has no static default, so non-optional needs a mapping model).
+        let book = try #require(entities["Book"])
+        #expect(book.attributesByName["fileName"] != nil)
+        #expect(book.attributesByName["id"]?.isOptional == true)
+        #expect(book.attributesByName["title"]?.isOptional == false)
+        #expect(book.attributesByName["format"]?.isOptional == false)
+    }
+
+    @Test("A v1 store opens under the v2 model via lightweight migration, keeping its rows")
+    func testLightweightMigrationFromV1() throws {
+        let v1 = try model("Folio")
+        let v2 = try model("Folio 2")
+
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FolioMigration-\(UUID().uuidString).sqlite")
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: storeURL.path + suffix))
+            }
+        }
+
+        // 1. Create a store with the v1 model and insert one book.
+        let bookID = UUID()
+        do {
+            let coordinator = NSPersistentStoreCoordinator(managedObjectModel: v1)
+            try coordinator.addPersistentStore(ofType: NSSQLiteStoreType, configurationName: nil, at: storeURL, options: nil)
+            let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+            context.persistentStoreCoordinator = coordinator
+            try context.performAndWait {
+                let book = NSEntityDescription.insertNewObject(forEntityName: "Book", into: context)
+                book.setValue(bookID, forKey: "id")
+                book.setValue("Old World", forKey: "title")
+                book.setValue("old world", forKey: "sortTitle")
+                book.setValue(URL(fileURLWithPath: "/books/Old World.epub"), forKey: "fileURL")
+                book.setValue(Date(), forKey: "dateAdded")
+                try context.save()
+            }
+            if let store = coordinator.persistentStores.first {
+                try coordinator.remove(store)
+            }
+        }
+
+        // 2. Reopen the same file with the v2 model and inferred migration on.
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: v2)
+        let options: [AnyHashable: Any] = [
+            NSMigratePersistentStoresAutomaticallyOption: true,
+            NSInferMappingModelAutomaticallyOption: true
+        ]
+        // Throws if the delta is not lightweight-migratable.
+        try coordinator.addPersistentStore(ofType: NSSQLiteStoreType, configurationName: nil, at: storeURL, options: options)
+
+        let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        context.persistentStoreCoordinator = coordinator
+        try context.performAndWait {
+            let request = NSFetchRequest<NSManagedObject>(entityName: "Book")
+            let books = try context.fetch(request)
+            #expect(books.count == 1)
+            #expect(books.first?.value(forKey: "id") as? UUID == bookID)
+            // The new attribute lands nil for migrated rows — this is exactly
+            // what BookRepository.backfillFileNamesIfNeeded() then fills in.
+            #expect(books.first?.value(forKey: "fileName") == nil)
+        }
     }
 }
