@@ -8,7 +8,8 @@
 //  Architecture:
 //  - Facade pattern: Single entry point for UI layer
 //  - Delegates to specialized services: BookRepository, ImportService, SearchService
-//  - Manages @Published state for SwiftUI binding
+//  - Reads the library's entity lists from LibraryStore (the single source of
+//    truth, #47); this type owns orchestration, not the fetched collections
 //  - Implements HTTPTransferBookProvider for WiFi transfer integration
 //
 //  Specialized Services:
@@ -19,8 +20,8 @@
 //
 //  Usage:
 //    // Views use LibraryService.shared
-//    LibraryService.shared.refresh()
-//    let results = LibraryService.shared.searchBooks(query: "tolkien")
+//    try LibraryService.shared.addBook(from: url)
+//    LibraryStore.shared.books   // the fetched book list
 //
 
 import Foundation
@@ -42,14 +43,15 @@ class LibraryService: ObservableObject {
     private let searchService: SearchService
     private let filenameParser: FilenameParser
 
+    /// The single source of truth for the library's fetched entity lists (#47).
+    /// LibraryService reads `store.books` / `.authors` / `.series` / `.tags`; it
+    /// no longer holds its own copies or reloads them after a mutation — the
+    /// store's fetched-results controllers pick up every context save.
+    private let store: LibraryStore
+
     // MARK: - Published State
 
-    @Published private(set) var books: [Book] = []
-    @Published private(set) var authors: [Author] = []
-    @Published private(set) var series: [Series] = []
-    @Published private(set) var tags: [Tag] = []
     @Published private(set) var isLoading: Bool = false
-    @Published private(set) var error: Error?
 
     /// Set by a scan that finished with books whose files it could not locate.
     /// A scan never deletes on its own (#81) — the UI presents this for the user
@@ -89,6 +91,7 @@ class LibraryService: ObservableObject {
         self.repository = BookRepository(context: context)
         self.importService = ImportService(repository: repository, parser: filenameParser, container: container)
         self.searchService = SearchService()
+        self.store = LibraryStore.shared
 
         // Forward ImportService state changes
         importService.objectWillChange
@@ -100,57 +103,6 @@ class LibraryService: ObservableObject {
         // One-time backfill of the v2 `Book.fileName` dedup key (#42) for rows
         // migrated from v1.
         repository.backfillFileNamesIfNeeded()
-
-        loadAll()
-    }
-
-    // MARK: - Loading
-
-    private func loadAll() {
-        loadBooks()
-        loadAuthors()
-        loadSeries()
-        loadTags()
-    }
-
-    func loadBooks() {
-        do {
-            books = try repository.fetchAll()
-        } catch {
-            self.error = error
-            print("Failed to load books: \(error.localizedDescription)")
-        }
-    }
-
-    func loadAuthors() {
-        do {
-            authors = try repository.fetchAllAuthors()
-        } catch {
-            print("Failed to load authors: \(error.localizedDescription)")
-        }
-    }
-
-    func loadSeries() {
-        do {
-            series = try repository.fetchAllSeries()
-        } catch {
-            print("Failed to load series: \(error.localizedDescription)")
-        }
-    }
-
-    func loadTags() {
-        do {
-            tags = try repository.fetchAllTags()
-        } catch {
-            print("Failed to load tags: \(error.localizedDescription)")
-        }
-    }
-
-    /// Refresh all data from database
-    func refresh() {
-        loadAll()
-        objectWillChange.send()
-        print("[LibraryService] Refreshed - Authors: \(authors.count), Series: \(series.count), Tags: \(tags.count)")
     }
 
     // MARK: - Add Book
@@ -167,9 +119,6 @@ class LibraryService: ObservableObject {
             sortTitle: sortTitle,
             authorName: parsed.author
         )
-
-        loadBooks()
-        objectWillChange.send()
 
         print("Added book: \(book.title ?? "Unknown")")
         return book
@@ -221,8 +170,6 @@ class LibraryService: ObservableObject {
         }
 
         try book.managedObjectContext?.save()
-        loadAll()
-        objectWillChange.send()
 
         return book
     }
@@ -230,11 +177,7 @@ class LibraryService: ObservableObject {
     /// Import multiple books from URLs
     func importBooks(from urls: [URL]) async -> ImportResult {
         isLoading = true
-        defer {
-            isLoading = false
-            loadAll()
-            objectWillChange.send()
-        }
+        defer { isLoading = false }
 
         return await importService.importBooks(from: urls)
     }
@@ -244,16 +187,12 @@ class LibraryService: ObservableObject {
     /// Delete a book from the library
     func deleteBook(_ book: Book, deleteFile: Bool = false) throws {
         try repository.delete(book, deleteFile: deleteFile)
-        loadBooks()
-        objectWillChange.send()
         print("Deleted book: \(book.title ?? "Unknown")")
     }
 
     /// Delete multiple books
     func deleteBooks(_ booksToDelete: [Book], deleteFiles: Bool = false) throws {
         try repository.deleteMultiple(booksToDelete, deleteFiles: deleteFiles)
-        loadBooks()
-        objectWillChange.send()
     }
 
     // MARK: - Update Book
@@ -261,8 +200,6 @@ class LibraryService: ObservableObject {
     /// Update book metadata
     func updateBook(_ book: Book, title: String? = nil, authors: [String]? = nil, summary: String? = nil) throws {
         try repository.update(book, title: title, authorNames: authors, summary: summary)
-        loadBooks()
-        loadAuthors()
     }
 
     /// Set cover image for book
@@ -274,7 +211,7 @@ class LibraryService: ObservableObject {
 
     /// Clean up book titles by extracting embedded author names
     func cleanupBookTitles(books booksToClean: [Book]? = nil) -> SearchService.CleanupResult {
-        let targetBooks = booksToClean ?? self.books
+        let targetBooks = booksToClean ?? store.books
 
         let result = searchService.cleanupBookTitles(
             books: targetBooks,
@@ -289,9 +226,6 @@ class LibraryService: ObservableObject {
 
         if result.titlesFixed > 0 {
             try? repository.save()
-            loadBooks()
-            loadAuthors()
-            objectWillChange.send()
         }
 
         return result
@@ -301,7 +235,7 @@ class LibraryService: ObservableObject {
 
     /// Search books by query
     func searchBooks(query: String) -> [Book] {
-        searchService.search(books: books, query: query)
+        searchService.search(books: store.books, query: query)
     }
 
     /// Filter books by various criteria
@@ -312,7 +246,7 @@ class LibraryService: ObservableObject {
         byFormat format: String? = nil
     ) -> [Book] {
         searchService.filter(
-            books: books,
+            books: store.books,
             byAuthors: filterAuthors,
             bySeries: filterSeries,
             byTags: filterTags,
@@ -340,7 +274,6 @@ class LibraryService: ObservableObject {
     /// Add tag to book
     func addTag(_ tagName: String, to book: Book, color: String? = nil) throws {
         try repository.addTag(tagName, to: book, color: color)
-        loadTags()
     }
 
     // MARK: - Collections
@@ -355,10 +288,10 @@ class LibraryService: ObservableObject {
     /// Get library statistics
     var statistics: LibraryStatistics {
         searchService.calculateStatistics(
-            books: books,
-            authors: authors,
-            series: series,
-            tags: tags
+            books: store.books,
+            authors: store.authors,
+            series: store.series,
+            tags: store.tags
         )
     }
 
@@ -414,7 +347,7 @@ class LibraryService: ObservableObject {
         let supportedExtensions = repository.supportedExtensions
         let scannedFiles = await collectEbookFiles(in: folderURL, supportedExtensions: supportedExtensions)
 
-        let existingBooks = books
+        let existingBooks = store.books
         var existingPathSet = Set<String>()
         for book in existingBooks {
             if let url = book.fileURL {
@@ -500,9 +433,6 @@ class LibraryService: ObservableObject {
         if updatedCount > 0 {
             try? repository.save()
         }
-
-        loadAll()
-        objectWillChange.send()
 
         let result = LibraryScanResult(
             imported: importResult?.imported ?? 0,
@@ -684,8 +614,6 @@ class LibraryService: ObservableObject {
         guard !books.isEmpty else { return }
         do {
             try repository.deleteMultiple(books, deleteFiles: false)
-            loadAll()
-            objectWillChange.send()
         } catch {
             logger.error("Failed to remove missing books: \(error.localizedDescription)")
             showToastMessage(title: "Couldn’t Remove Books", message: error.localizedDescription, isError: true)
@@ -890,7 +818,7 @@ enum LibraryError: LocalizedError {
 extension LibraryService: HTTPTransferBookProvider {
     /// Get all books as DTOs for the HTTP transfer server
     func getAllBooks() -> [BookDTO] {
-        books.map { book in
+        store.books.map { book in
             let authorNames = (book.authors as? Set<Author>)?.compactMap { $0.name } ?? []
             return BookDTO(
                 id: book.id?.uuidString ?? UUID().uuidString,
@@ -907,13 +835,13 @@ extension LibraryService: HTTPTransferBookProvider {
     /// Get the file URL for a book by its ID
     func getBookFileURL(id: String) -> URL? {
         guard let uuid = UUID(uuidString: id) else { return nil }
-        return books.first { $0.id == uuid }?.fileURL
+        return store.books.first { $0.id == uuid }?.fileURL
     }
 
     /// Get the format for a book by its ID
     func getBookFormat(id: String) -> EbookFormat? {
         guard let uuid = UUID(uuidString: id),
-              let book = books.first(where: { $0.id == uuid }),
+              let book = store.books.first(where: { $0.id == uuid }),
               let formatString = book.format else { return nil }
         return EbookFormat(fileExtension: formatString)
     }
@@ -921,14 +849,14 @@ extension LibraryService: HTTPTransferBookProvider {
     /// Get security-scoped bookmark data for a book
     func getBookmarkData(id: String) -> Data? {
         guard let uuid = UUID(uuidString: id),
-              let book = books.first(where: { $0.id == uuid }) else { return nil }
+              let book = store.books.first(where: { $0.id == uuid }) else { return nil }
         return book.bookmarkData
     }
 
     /// Get book metadata (title, authors) for conversion
     func getBookMetadata(id: String) -> (title: String, authors: [String])? {
         guard let uuid = UUID(uuidString: id),
-              let book = books.first(where: { $0.id == uuid }) else { return nil }
+              let book = store.books.first(where: { $0.id == uuid }) else { return nil }
 
         let title = book.title ?? "Unknown"
         let authors = (book.authors as? Set<Author>)?.compactMap { $0.name } ?? []

@@ -179,7 +179,7 @@ struct WiFiTransferView: View {
             HStack(spacing: 4) {
                 Image(systemName: "books.vertical.fill")
                     .font(.caption)
-                Text("\(libraryService.books.count) book\(libraryService.books.count == 1 ? "" : "s") available")
+                Text("\(LibraryStore.shared.books.count) book\(LibraryStore.shared.books.count == 1 ? "" : "s") available")
                     .font(.caption)
             }
             .foregroundColor(.secondary)
@@ -381,7 +381,7 @@ struct WiFiTransferView: View {
 
             if let port = transferServer.port as UInt16? {
                 try bonjourService.startAdvertising(port: port)
-                bonjourService.updateTXTRecord(["books": "\(libraryService.books.count)"])
+                bonjourService.updateTXTRecord(["books": "\(LibraryStore.shared.books.count)"])
             }
 
             if let url = transferServer.serverURL {

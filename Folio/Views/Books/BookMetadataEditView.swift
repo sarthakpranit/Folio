@@ -195,7 +195,6 @@ struct BookMetadataEditView: View {
             }
 
             try viewContext.save()
-            libraryService.refresh()
             dismiss()
         } catch {
             errorMessage = "Failed to save: \(error.localizedDescription)"

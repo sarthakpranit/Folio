@@ -24,6 +24,7 @@ import CoreData
 
 struct SidebarView: View {
     @ObservedObject var libraryService: LibraryService
+    @EnvironmentObject private var store: LibraryStore
     @Binding var selection: SidebarItem?
 
     // Fetch Kindle devices directly to observe relationship changes
@@ -37,7 +38,7 @@ struct SidebarView: View {
         List(selection: $selection) {
             Section("Library") {
                 Label("All Books", systemImage: "books.vertical")
-                    .badge(libraryService.books.count)
+                    .badge(store.books.count)
                     .tag(SidebarItem.allBooks)
 
                 Label("Recently Added", systemImage: "clock")
@@ -49,15 +50,15 @@ struct SidebarView: View {
 
             Section("Browse") {
                 Label("Authors", systemImage: "person.2")
-                    .badge(libraryService.authors.count)
+                    .badge(store.authors.count)
                     .tag(SidebarItem.authors)
 
                 Label("Series", systemImage: "text.book.closed")
-                    .badge(libraryService.series.count)
+                    .badge(store.series.count)
                     .tag(SidebarItem.series)
 
                 Label("Tags", systemImage: "tag")
-                    .badge(libraryService.tags.count)
+                    .badge(store.tags.count)
                     .tag(SidebarItem.tags)
             }
 
@@ -109,4 +110,5 @@ struct SidebarView: View {
         libraryService: LibraryService.shared,
         selection: .constant(.allBooks)
     )
+    .environmentObject(LibraryStore.shared)
 }
