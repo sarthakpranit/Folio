@@ -16,6 +16,7 @@ struct FolioApp: App {
     // store fails to load (#39).
     @StateObject private var persistenceController = PersistenceController.shared
     @StateObject private var libraryService = LibraryService.shared
+    @StateObject private var libraryStore = LibraryStore.shared
 
     /// Grid item size for zoom (shared via AppStorage)
     @AppStorage("gridItemMinSize") private var gridItemMinSize: Double = 150
@@ -32,6 +33,7 @@ struct FolioApp: App {
             } else {
                 ContentView()
                     .environment(\.managedObjectContext, persistenceController.container.viewContext)
+                    .environmentObject(libraryStore)
             }
         }
         // Settings window (Cmd+,)
@@ -111,7 +113,7 @@ struct FolioApp: App {
     /// Fetch metadata for books that don't have cover images or complete metadata
     @MainActor
     private func fetchMissingMetadata() async {
-        let books = libraryService.books.filter { book in
+        let books = libraryStore.books.filter { book in
             // Books missing cover image or summary are considered to need metadata
             book.coverImageData == nil || book.summary == nil || book.summary?.isEmpty == true
         }
@@ -193,8 +195,6 @@ struct FolioApp: App {
                 print("Failed to fetch metadata for \(title): \(error)")
             }
         }
-
-        libraryService.refresh()
 
         ToastNotificationManager.shared.show(
             title: "Metadata Complete",

@@ -169,10 +169,12 @@ class PersistenceController: ObservableObject {
         }
 
         // A batch delete writes straight to the store and never tells the
-        // context, so anything already materialised (e.g. LibraryService.books)
+        // context, so anything already materialised (e.g. LibraryStore.books)
         // stays live and throws the next time it is touched. Merging the
         // deleted IDs turns those rows into deleted objects instead of leaving
         // them dangling (#46) — replaces the old blunt `context.reset()`.
+        // The merge also drives LibraryStore's fetched-results controllers, so
+        // the UI's book list empties without any manual reload.
         NSManagedObjectContext.mergeChanges(
             fromRemoteContextSave: [NSDeletedObjectsKey: deletedObjectIDs],
             into: [container.viewContext]

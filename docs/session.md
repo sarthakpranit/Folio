@@ -32,3 +32,16 @@ Phase 2: polish and repository truth-pass cleanup
 - Decisions
   - `.txt` is not a supported Folio import or transfer format
   - Docs should describe shipped behavior, not planned or previously proposed architecture
+  - #47 (M2): one source of truth for the fetched entity lists. New
+    `LibraryStore` (`@MainActor`, `ObservableObject`) wraps one
+    `NSFetchedResultsController` per entity (Book/Author/Series/Tag) and is the
+    only owner of `books`/`authors`/`series`/`tags`. `LibraryService` keeps its
+    `@Published` collections no longer — it reads `store.*` and dropped
+    `loadAll()`/`load*()`/`refresh()` and the manual `objectWillChange.send()`
+    churn. `ContentView` and `SidebarView` dropped their book `@FetchRequest`s
+    and observe the store via `@EnvironmentObject` (injected in `FolioApp`).
+    Used `ObservableObject` not `@Observable` to match the codebase; the
+    architecture-target.md `@Observable` wording is deferred to the Swift 6
+    milestone. Perf pipeline (debounce/memoise, #118), one selection model
+    (#92), and `LibraryService` → pure composition root stay in their own
+    tickets.

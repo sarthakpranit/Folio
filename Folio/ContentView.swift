@@ -28,12 +28,9 @@ struct ContentView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @StateObject private var libraryService = LibraryService.shared
 
-    @FetchRequest(
-        entity: Book.entity(),
-        sortDescriptors: [NSSortDescriptor(keyPath: \Book.dateAdded, ascending: false)],
-        predicate: nil,
-        animation: .default)
-    private var books: FetchedResults<Book>
+    /// The book list comes from the one source of truth (#47), not a per-view
+    /// @FetchRequest.
+    @EnvironmentObject private var store: LibraryStore
 
     @FetchRequest(
         entity: KindleDevice.entity(),
@@ -79,7 +76,7 @@ struct ContentView: View {
     @State private var showingBatchDeleteConfirmation = false
 
     var displayedBooks: [Book] {
-        var result = Array(books)
+        var result = store.books
 
         // Apply sidebar filter
         switch selectedSidebarItem {
@@ -182,7 +179,7 @@ struct ContentView: View {
 
     /// Get selected Book objects from their ObjectIDs
     var selectedBookObjects: [Book] {
-        books.filter { selectedBooks.contains($0.objectID) }
+        store.books.filter { selectedBooks.contains($0.objectID) }
     }
 
     // MARK: - Toolbar Content
@@ -519,7 +516,7 @@ struct ContentView: View {
         .navigationTitle(navigationTitle)
         // Note: Removed .id(refreshID) and NSManagedObjectContextDidSave observer
         // that was forcing full view recreation on every Core Data save.
-        // @FetchRequest already observes Core Data changes automatically,
+        // LibraryStore's fetched-results controllers observe Core Data changes,
         // and the forced refresh was causing scroll position reset.
         // Cmd+A to select all books (unless typing in a text field)
         .onAppear {
@@ -549,13 +546,13 @@ struct ContentView: View {
         ZStack {
             switch selectedSidebarItem {
             case .authors:
-                AuthorListView(authors: libraryService.authors, selection: $selectedSidebarItem)
+                AuthorListView(authors: store.authors, selection: $selectedSidebarItem)
             case .series:
-                SeriesListView(series: libraryService.series, selection: $selectedSidebarItem)
+                SeriesListView(series: store.series, selection: $selectedSidebarItem)
             case .tags:
-                TagListView(tags: libraryService.tags, selection: $selectedSidebarItem)
+                TagListView(tags: store.tags, selection: $selectedSidebarItem)
             default:
-                if books.isEmpty {
+                if store.books.isEmpty {
                     EmptyLibraryView(libraryService: libraryService)
                 } else if displayedBooks.isEmpty {
                     VStack(spacing: 16) {
@@ -826,4 +823,5 @@ struct ContentView: View {
 #Preview {
     ContentView()
         .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
+        .environmentObject(LibraryStore.shared)
 }
