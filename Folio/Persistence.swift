@@ -91,10 +91,17 @@ class PersistenceController: ObservableObject {
         if inMemory {
             description.url = URL(fileURLWithPath: "/dev/null")
         } else {
-            // Attempt lightweight migration on a model change instead of dropping
-            // straight into the load-failure path (#39).
+            // Apply an explicit mapping model when a model version ships one, but
+            // never let Core Data *infer* a migration. Inference silently drops
+            // renamed/removed attributes — the v2→v3 change (#137) renames
+            // `fileURL` to `filePath`, which inference would "migrate" by
+            // orphaning every book. With inference off, an incompatible store
+            // throws here and the recovery screen takes over (decision #4 / #39):
+            // pre-1.0, the store is recreated on the user's terms, never
+            // rewritten under them. Re-enable inference only alongside a real
+            // migration story.
             description.shouldMigrateStoreAutomatically = true
-            description.shouldInferMappingModelAutomatically = true
+            description.shouldInferMappingModelAutomatically = false
         }
 
         container.loadPersistentStores { [weak self] storeDescription, error in
