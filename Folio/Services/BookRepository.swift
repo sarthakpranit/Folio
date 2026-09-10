@@ -123,12 +123,10 @@ class BookRepository {
         guard !filename.isEmpty else { return nil }
 
         // Check 1: Same filename already in library.
-        // `fileName` (v2 model, #42) is a denormalised, lowercased copy of
-        // `fileURL.lastPathComponent`, fetch-indexed. Query it directly instead
-        // of materialising every Book row and scanning in Swift — import calls
-        // this once per file, so the old full-table scan was O(N x M).
-        // (`fileURL` stays a URI attribute here; migrating it off URI is a
-        // separate follow-up, out of scope for #42.)
+        // `fileName` (#42) is a denormalised, lowercased copy of the file's
+        // `lastPathComponent`, fetch-indexed. Query it directly instead of
+        // materialising every Book row and scanning in Swift — import calls this
+        // once per file, so the old full-table scan was O(N x M).
         let filenameRequest = Book.fetchRequest()
         filenameRequest.predicate = NSPredicate(format: "fileName ==[c] %@", filename)
         filenameRequest.fetchLimit = 1
