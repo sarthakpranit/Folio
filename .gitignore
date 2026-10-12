@@ -4,6 +4,7 @@
 # Private Documentation
 # ====================
 .claude/
+.agents/
 
 # ====================
 # Xcode

@@ -1,7 +1,7 @@
 # Working with Assistants on Folio
 **Best Practices for AI-Assisted Development**
 
-This document provides guidelines for effectively using an assistant (Codex / Claude Code) when developing Folio. Following these practices will help maintain code quality, project consistency, and development velocity.
+This document provides guidelines for effectively using an assistant when developing Folio. Following these practices will help maintain code quality, project consistency, and development velocity.
 
 ---
 
@@ -37,7 +37,7 @@ If your assistant supports a resume workflow, use it. Otherwise, point it at [do
 
 ### Core Project Principles
 
-Always keep these in mind when asking your assistant (Codex / Claude Code) for help:
+Always keep these in mind when asking your assistant for help:
 
 1. **Value Proposition:** "The Beautiful Ebook Library for Mac"
 2. **WiFi-First:** Wireless transfer is the marquee feature
@@ -118,7 +118,7 @@ This maintains continuity between sessions and prevents context loss.
 
 ### Code Review
 
-**Ask your assistant (Codex / Claude Code) to review your code:**
+**Ask your assistant to review your code:**
 ```
 Here's my implementation of HTTPTransferServer.
 Please review for:
@@ -217,7 +217,7 @@ What's best for reliability and maintainability?
 
 ### Making Decisions
 
-**DO consult your assistant (Codex / Claude Code) for:**
+**DO consult your assistant for:**
 - Architecture patterns (MVVM, MVC, etc.)
 - Technology choices (which library to use)
 - Performance optimization strategies
@@ -238,7 +238,7 @@ Constraints:
 
 ### Document Decisions
 
-After making a decision with your assistant (Codex / Claude Code)'s help:
+After making a decision with your assistant's help:
 ```
 We decided to keep the SwiftUI grid for now and only revisit AppKit
 if profiling shows it is necessary.
@@ -362,7 +362,7 @@ Which approach aligns best with our architecture?
 
 ## Quality Checklist
 
-Before committing code reviewed/generated with your assistant (Codex / Claude Code), verify:
+Before committing code reviewed/generated with your assistant, verify:
 
 ### Code Quality
 
@@ -403,7 +403,7 @@ Before committing code reviewed/generated with your assistant (Codex / Claude Co
 
 ### Multi-Step Planning
 
-For complex features, ask your assistant (Codex / Claude Code) to create a detailed plan first:
+For complex features, ask your assistant to create a detailed plan first:
 
 ```
 I need to implement WiFi transfer HTTP server.
@@ -432,7 +432,7 @@ Round 4: "Add comprehensive tests"
 
 ### Code Review Checklist
 
-Ask your assistant (Codex / Claude Code) to review against specific criteria:
+Ask your assistant to review against specific criteria:
 
 ```
 Review this code for:
@@ -466,7 +466,7 @@ Provide specific suggestions for improvement.
 
 ### Decision Log
 
-When you make an important decision with your assistant (Codex / Claude Code):
+When you make an important decision with your assistant:
 
 ```
 Decision: Use AppKit for macOS grid view
@@ -483,12 +483,12 @@ Add this to [docs/session.md](docs/session.md) decision log.
 
 ### When Your Assistant Gives Incorrect Information
 
-**Assistants (Codex / Claude Code) can hallucinate or be outdated. Always verify:**
+**Assistants can hallucinate or be outdated. Always verify:**
 
 1. Check official Apple documentation
 2. Test the code yourself
 3. Search GitHub/Stack Overflow for real examples
-4. Ask your assistant (Codex / Claude Code) to explain its reasoning
+4. Ask your assistant to explain its reasoning
 
 **If code doesn't work:**
 ```
@@ -511,7 +511,7 @@ What am I missing?
 
 ### When You Disagree with Your Assistant
 
-**Your assistant (Codex / Claude Code) is a tool, not gospel. You're the decision maker.**
+**Your assistant is a tool, not gospel. You're the decision maker.**
 
 ```
 You suggested [X], but I think [Y] is better because [reasons].
@@ -778,26 +778,26 @@ Each file should tell a story. Use this header template:
 ```
 User: /resume
 
-Assistant (Codex / Claude Code): [loads context from [docs/session.md](docs/session.md)]
+Assistant: [loads context from [docs/session.md](docs/session.md)]
 "You last worked on Core Data model.
 Next in [docs/roadmap.md](docs/roadmap.md) is LibraryService implementation.
 Ready to start?"
 
 User: "Yes, let's implement LibraryService.addBook(from:)"
 
-Assistant (Codex / Claude Code): [provides implementation based on [docs/requirements.md](docs/requirements.md)]
+Assistant: [provides implementation based on [docs/requirements.md](docs/requirements.md)]
 
 User: "Good! Now add error handling for invalid files"
 
-Assistant (Codex / Claude Code): [adds comprehensive error handling]
+Assistant: [adds comprehensive error handling]
 
 User: "Perfect. Create unit tests for this method"
 
-Assistant (Codex / Claude Code): [creates tests]
+Assistant: [creates tests]
 
 User: "/update-session"
 
-Assistant (Codex / Claude Code): [captures progress, updates [docs/session.md](docs/session.md)]
+Assistant: [captures progress, updates [docs/session.md](docs/session.md)]
 ```
 
 ### Session 2: Debugging
@@ -806,13 +806,13 @@ Assistant (Codex / Claude Code): [captures progress, updates [docs/session.md](d
 User: "App crashes when searching with empty query.
 Here's the crash log: [paste]"
 
-Assistant (Codex / Claude Code): "The issue is in searchBooks().
+Assistant: "The issue is in searchBooks().
 You're force-unwrapping a nil predicate.
 Here's the fix: [shows fix]"
 
 User: "That worked! Add a test to prevent regression?"
 
-Assistant (Codex / Claude Code): [creates test for empty query case]
+Assistant: [creates test for empty query case]
 ```
 
 ### Session 3: Architecture Decision
@@ -821,12 +821,12 @@ Assistant (Codex / Claude Code): [creates test for empty query case]
 User: "For WiFi transfer, should I use Swifter or Vapor?
 We need lightweight HTTP server for Phase 1."
 
-Assistant (Codex / Claude Code): [compares options with pros/cons]
+Assistant: [compares options with pros/cons]
 
 User: "Let's go with Swifter for simplicity.
 Add this decision to [docs/session.md](docs/session.md)?"
 
-Assistant (Codex / Claude Code): [updates decision log with rationale]
+Assistant: [updates decision log with rationale]
 ```
 
 ---
@@ -835,14 +835,14 @@ Assistant (Codex / Claude Code): [updates decision log with rationale]
 
 ### Your Assistant Is a Powerful Tool, But YOU Are the Developer
 
-**Use your assistant (Codex / Claude Code) to:**
+**Use your assistant to:**
 - ✅ Speed up implementation
 - ✅ Learn best practices
 - ✅ Get unstuck quickly
 - ✅ Maintain documentation
 - ✅ Review code quality
 
-**Don't use your assistant (Codex / Claude Code) to:**
+**Don't use your assistant to:**
 - ❌ Avoid learning fundamentals
 - ❌ Make decisions without understanding
 - ❌ Blindly copy-paste without comprehension
@@ -859,7 +859,7 @@ You're building Folio, not the assistant.
 
 ### Keep Learning
 
-Use your assistant (Codex / Claude Code) as a learning tool:
+Use your assistant as a learning tool:
 - Ask "Why?" when you don't understand
 - Request explanations, not just code
 - Build mental models of how things work
