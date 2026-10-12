@@ -70,6 +70,7 @@ final class CoverDecodePerfTests: PerfTestCase {
         for (i, b) in blobs.enumerated() {
             let book = Book(context: ctx)
             book.id = UUID()
+            book.dateAdded = Date()
             book.title = "Cover \(i)"
             book.coverImageData = b
         }

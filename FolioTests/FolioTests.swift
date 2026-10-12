@@ -380,7 +380,7 @@ struct DeleteAllDataTests {
 
         // One row per model entity. KindleDevice matters here: it was absent
         // from the delete list, so a "reset" silently kept Kindle devices (#46).
-        let book = Book(context: context); book.id = UUID(); book.title = "Dune"
+        let book = Book(context: context); book.id = UUID(); book.title = "Dune"; book.dateAdded = Date()
         let author = Author(context: context); author.id = UUID(); author.name = "Frank Herbert"
         let series = Series(context: context); series.id = UUID(); series.name = "Dune"
         let tag = Tag(context: context); tag.id = UUID(); tag.name = "SciFi"
@@ -406,6 +406,7 @@ struct DeleteAllDataTests {
         let book = Book(context: context)
         book.id = UUID()
         book.title = "Neuromancer"
+        book.dateAdded = Date()
         try context.save()
 
         // A batch delete bypasses the context; without merging the deleted IDs
@@ -420,12 +421,19 @@ struct DeleteAllDataTests {
 
 // MARK: - Core Data Model Migration Tests
 
-/// Guards the v1 -> v2 schema change (#42/#44/#45). The whole point of shipping a
-/// second `.xcdatamodel` version rather than editing the first in place is that
-/// existing user stores must open via lightweight/inferred migration — no
-/// mapping model, no data loss. If a future edit makes the delta non-lightweight
-/// (e.g. a new non-optional attribute with no default), this suite fails loudly
-/// instead of the app dropping into the store-load-failure screen for real users.
+/// Guards the model versions' shape and their migration behaviour.
+///
+/// - v1 -> v2 (#42/#44/#45) was deliberately kept **lightweight** — indexes,
+///   a new optional attribute, uniqueness constraints — so existing stores
+///   migrate with no mapping model and no data loss (`testLightweightMigrationFromV1`).
+/// - v2 -> v3 (#136/#137) is deliberately **not** lightweight: `Book.id` /
+///   `Book.dateAdded` become non-optional and `fileURL` (URI) is replaced by
+///   `filePath` (String). Per the pre-1.0 "clean base" call, there is no
+///   mapping model — an incompatible store surfaces via the recovery screen
+///   (decision #4 / #39), it is never silently rewritten.
+///   `testV2StoreRejectedByV3WithoutInference` pins that: Core Data *would*
+///   infer a lossy migration (dropping `fileURL`), so `Persistence.swift`
+///   turns inference off and the open must throw instead.
 @Suite("Core Data Model Migration")
 struct CoreDataMigrationTests {
 
@@ -531,6 +539,74 @@ struct CoreDataMigrationTests {
             // The new attribute lands nil for migrated rows — this is exactly
             // what BookRepository.backfillFileNamesIfNeeded() then fills in.
             #expect(books.first?.value(forKey: "fileName") == nil)
+        }
+    }
+
+    @Test("v3 model makes Book.id / Book.dateAdded non-optional and stores the path as a String")
+    func testV3ModelShape() throws {
+        let v3 = try model("Folio 3")
+        let book = try #require(v3.entitiesByName["Book"])
+
+        // #136 — DB-level integrity: id and dateAdded can no longer be nil.
+        #expect(book.attributesByName["id"]?.isOptional == false)
+        #expect(book.attributesByName["dateAdded"]?.isOptional == false)
+
+        // #137 — the URI attribute is gone; the location is a plain String.
+        #expect(book.attributesByName["fileURL"] == nil)
+        let filePath = try #require(book.attributesByName["filePath"])
+        #expect(filePath.attributeType == .stringAttributeType)
+
+        // Everything v2 established is still in place. Compiled-model uniqueness
+        // constraint elements come back as bare property-name strings, not
+        // `NSPropertyDescription`s — handle both, as `testV2ModelShape` does.
+        #expect(book.attributesByName["fileName"] != nil)
+        let idConstraint = book.uniquenessConstraints.flatMap { group in
+            group.map { ($0 as? NSPropertyDescription)?.name ?? String(describing: $0) }
+        }
+        #expect(idConstraint.contains("id"))
+        #expect(Set(book.indexes.map(\.name)).isSuperset(of: ["bySortTitle", "byFileName", "byISBN"]))
+    }
+
+    @Test("Under Persistence.swift's rules (no inferred mapping) a v2 store cannot open as v3")
+    func testV2StoreRejectedByV3WithoutInference() throws {
+        let v2 = try model("Folio 2")
+        let v3 = try model("Folio 3")
+
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FolioMigration-\(UUID().uuidString).sqlite")
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: storeURL.path + suffix))
+            }
+        }
+
+        // A minimal valid v2 store with one fully-populated row.
+        let makeCoordinator = NSPersistentStoreCoordinator(managedObjectModel: v2)
+        try makeCoordinator.addPersistentStore(ofType: NSSQLiteStoreType, configurationName: nil, at: storeURL, options: nil)
+        let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        context.persistentStoreCoordinator = makeCoordinator
+        try context.performAndWait {
+            let book = NSEntityDescription.insertNewObject(forEntityName: "Book", into: context)
+            book.setValue(UUID(), forKey: "id")
+            book.setValue("Kept", forKey: "title")
+            book.setValue(Date(), forKey: "dateAdded")
+            book.setValue(URL(fileURLWithPath: "/books/Kept.epub"), forKey: "fileURL")
+            try context.save()
+        }
+        if let store = makeCoordinator.persistentStores.first { try makeCoordinator.remove(store) }
+
+        // Core Data WOULD infer a migration here (dropping `fileURL`, orphaning
+        // the book) if asked. `Persistence.swift` sets
+        // `shouldInferMappingModelAutomatically = false` precisely so it doesn't:
+        // an incompatible store must throw and hand off to the recovery screen
+        // (decision #4 / #39), never be silently rewritten. This pins that.
+        let v3Coordinator = NSPersistentStoreCoordinator(managedObjectModel: v3)
+        let options: [AnyHashable: Any] = [
+            NSMigratePersistentStoresAutomaticallyOption: true,
+            NSInferMappingModelAutomaticallyOption: false
+        ]
+        #expect(throws: (any Error).self) {
+            try v3Coordinator.addPersistentStore(ofType: NSSQLiteStoreType, configurationName: nil, at: storeURL, options: options)
         }
     }
 }
